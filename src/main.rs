@@ -1,164 +1,161 @@
-//=============================================================================
-// NOVA Folding Scheme - Proof of Space-Time (PoSt) Example
 use bellpepper_core::{num::AllocatedNum, ConstraintSystem, SynthesisError};
 use nova_snark::{
-    traits::{circuit::{StepCircuit, TrivialCircuit}, Group},
-    // CẬP NHẬT 1: Sử dụng Engine do chính Nova cung cấp thay vì pasta_curves
+    // ✅ Bỏ `Group` đi để xóa cảnh báo (warning)
+    traits::{circuit::{StepCircuit, TrivialCircuit}, Engine}, 
     provider::{PallasEngine, VestaEngine}, 
     RecursiveSNARK, PublicParams,
 };
 use pasta_curves::pallas::Scalar as Fr;
-use ff::Field; // CẬP NHẬT 2: Thêm Field để gọi hàm ZERO
+// ✅ Thêm `PrimeField` vào đây để gọi được hàm `from_repr`
+use ff::{Field, PrimeField}; 
+use rand::Rng;
+use std::time::Instant;
 
 mod constants;
 mod poseidon2_gadget;
 use poseidon2_gadget::Poseidon2Gadget;
 
 #[derive(Clone, Debug)]
+pub struct DataSector {
+    pub id: u64,
+    pub data: Vec<u8>,
+    pub commitment: Fr,
+}
+
+impl DataSector {
+    pub fn new(id: u64, data: Vec<u8>) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&data);
+        let hash_bytes = hasher.finalize();
+        
+        let mut commitment_bytes = [0u8; 32];
+        commitment_bytes.copy_from_slice(hash_bytes.as_bytes());
+        let commitment = Option::from(Fr::from_repr(commitment_bytes)).unwrap_or(Fr::ZERO);
+        
+        Self { id, data, commitment }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PoStStepCircuit {
-    pub challenge: Fr, 
-    pub data_leaf: Fr, 
+    pub challenge_random: Fr,
+    pub sector_commitment: Fr,
+    pub epoch: Fr,
 }
 
 impl StepCircuit<Fr> for PoStStepCircuit {
-    fn arity(&self) -> usize {
-        1 
-    }
+    fn arity(&self) -> usize { 1 }
 
     fn synthesize<CS: ConstraintSystem<Fr>>(
         &self,
         cs: &mut CS,
-        z_in: &[AllocatedNum<Fr>], 
+        z_in: &[AllocatedNum<Fr>],
     ) -> Result<Vec<AllocatedNum<Fr>>, SynthesisError> {
         
-        let z_prev = &z_in[0];
+        let z_prev = z_in[0].clone();
         
-        let challenge_var = AllocatedNum::alloc(cs.namespace(|| "challenge"), || Ok(self.challenge))?;
-        let data_var = AllocatedNum::alloc(cs.namespace(|| "data"), || Ok(self.data_leaf))?;
-
-        let initial_state = vec![z_prev.clone(), challenge_var, data_var];
+        let challenge_var = AllocatedNum::alloc(cs.namespace(|| "challenge"), || Ok(self.challenge_random))?;
+        let sector_var = AllocatedNum::alloc(cs.namespace(|| "sector"), || Ok(self.sector_commitment))?;
+        let epoch_var = AllocatedNum::alloc(cs.namespace(|| "epoch"), || Ok(self.epoch))?;
         
+        let combined_data = AllocatedNum::alloc(cs.namespace(|| "combined"), || {
+            Ok(self.sector_commitment + self.epoch)
+        })?;
+        
+        cs.enforce(
+            || "combine",
+            |lc| lc + sector_var.get_variable() + epoch_var.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + combined_data.get_variable(),
+        );
+        
+        let initial_state = vec![z_prev, challenge_var, combined_data];
         let mut hasher = Poseidon2Gadget::new(cs, initial_state);
         let state_out = hasher.hash()?;
-
+        
         Ok(vec![state_out[0].clone()])
     }
 }
 
 fn main() {
-    println!("=== KHỞI ĐỘNG HỆ THỐNG NOVA FOLDING SCHEME ===");
-
-    let circuit_primary = PoStStepCircuit { challenge: Fr::ZERO, data_leaf: Fr::ZERO };
-    let circuit_secondary = TrivialCircuit::default();
-
-    println!("1. Đang thiết lập Tham số Công khai (Public Params)... (Có thể mất vài giây)");
+    println!("\n╔════════════════════════════════════════════════════════════════╗");
+    println!("║     PROOF OF SPACE-TIME (PoSt) WITH NOVA FOLDING SCHEME        ║");
+    println!("╚════════════════════════════════════════════════════════════════╝");
     
-    // CẬP NHẬT 3: Thay G1, G2 bằng PallasEngine và VestaEngine
+    let sector = DataSector::new(1, b"Important blockchain data".to_vec());
+    let initial_state = Fr::from(12345u64);
+    
+    let circuit_primary = PoStStepCircuit {
+        challenge_random: Fr::ZERO,
+        sector_commitment: Fr::ZERO,
+        epoch: Fr::ZERO,
+    };
+    
+    // ✅ Sửa lỗi TrivialCircuit cho đúng chuẩn 0.34.0
+    let circuit_secondary = TrivialCircuit::<<VestaEngine as Engine>::Scalar>::default();
+    
+    println!("\n🔧 Đang thiết lập Public Params...");
+    let start_setup = Instant::now();
     let pp = PublicParams::<
-        PallasEngine, VestaEngine,
+        PallasEngine,
+        VestaEngine,
         PoStStepCircuit,
-        TrivialCircuit<<VestaEngine as nova_snark::traits::Engine>::Scalar>,
+        TrivialCircuit<<VestaEngine as Engine>::Scalar>,
     >::setup(
-        &circuit_primary, 
-        &circuit_secondary, 
-        &*nova_snark::traits::snark::default_ck_hint(), 
-        &*nova_snark::traits::snark::default_ck_hint()
+        &circuit_primary,
+        &circuit_secondary,
+        &*nova_snark::traits::snark::default_ck_hint(),
+        &*nova_snark::traits::snark::default_ck_hint(),
     );
-
-    let z0_primary = vec![Fr::from(12345u64)]; 
-    // CẬP NHẬT 4: Gọi Scalar của VestaEngine cho điểm khởi tạo
-    let z0_secondary = vec![<VestaEngine as nova_snark::traits::Engine>::Scalar::ZERO];
-
+    println!("   ✅ Hoàn tất sau {:?}", start_setup.elapsed());
+    
+    let z0_primary = vec![initial_state];
+    let z0_secondary = vec![<VestaEngine as Engine>::Scalar::ZERO];
+    
     let mut recursive_snark = RecursiveSNARK::new(
-        &pp, 
-        &circuit_primary, 
-        &circuit_secondary, 
-        &z0_primary, 
+        &pp,
+        &circuit_primary,
+        &circuit_secondary,
+        &z0_primary,
         &z0_secondary,
-    ).expect("Lỗi khởi tạo SNARK đệ quy");
-
-    let num_slots = 5;
-    println!("2. Bắt đầu quá trình Folding qua {} chu kỳ thời gian:", num_slots);
-
-    for i in 0..num_slots {
+    ).expect("Lỗi khởi tạo SNARK");
+    
+    println!("\n⏰ Bắt đầu chạy các Epoch...");
+    let num_epochs = 3;
+    let mut rng = rand::thread_rng();
+    
+    for epoch in 0..num_epochs {
+        let challenge_random = Fr::from(rng.gen::<u64>());
+        let epoch_fr = Fr::from(epoch as u64);
+        
         let step_circuit = PoStStepCircuit {
-            challenge: Fr::from(i as u64 * 10),
-            data_leaf: Fr::from(9999 + i as u64),
+            challenge_random,
+            sector_commitment: sector.commitment,
+            epoch: epoch_fr,
         };
-
-        let res = recursive_snark.prove_step(
-            &pp, 
-            &step_circuit, 
-            &circuit_secondary
+        
+        let start_prove = Instant::now();
+        let result = recursive_snark.prove_step(
+            &pp,
+            &step_circuit,
+            &circuit_secondary,
         );
         
-        match res {
-            Ok(_) => println!("   [+] Gập thành công Slot thứ {}", i + 1),
-            Err(e) => panic!("   [-] Lỗi Folding ở Slot {}: {:?}", i + 1, e),
+        match result {
+            Ok(_) => println!("      ✅ Epoch {} folding thành công sau {:?}", epoch + 1, start_prove.elapsed()),
+            Err(e) => { println!("      ❌ Lỗi Epoch {}: {:?}", epoch + 1, e); return; }
         }
     }
-
-    println!("3. Quá trình Proving hoàn tất! Đang tiến hành Xác minh (Verify)...");
-    let res = recursive_snark.verify(
-        &pp, 
-        num_slots, 
-        &z0_primary, 
-        &z0_secondary
-    );
-
-    if res.is_ok() {
-        println!("=== ✅ XÁC MINH THÀNH CÔNG! Bằng chứng PoSt hợp lệ! ===");
-        let (z_final_primary, _) = res.unwrap();
-        println!("Mã Hash tích lũy cuối cùng: {:?}", z_final_primary[0]);
-    } else {
-        println!("=== ❌ XÁC MINH THẤT BẠI! ===");
+    
+    println!("\n🔍 Đang xác minh bằng chứng...");
+    let start_verify = Instant::now();
+    let verify_result = recursive_snark.verify(&pp, num_epochs, &z0_primary, &z0_secondary);
+    println!("   ⏱️  Thời gian verify: {:?}", start_verify.elapsed());
+    
+    match verify_result {
+        Ok((final_state, _)) => {
+            println!("  ✅✅✅  XÁC MINH THÀNH CÔNG! Final state: {:?}", final_state[0]);
+        }
+        Err(e) => println!("  ❌❌❌  LỖI XÁC MINH: {:?}", e),
     }
 }
-
-//========================================
-//========================================
-// Mạch Gadget Poseidon2 R1CS Test
-// use bellpepper_core::{num::AllocatedNum, ConstraintSystem, test_cs::TestConstraintSystem};
-// use pasta_curves::pallas::Scalar as Fr;
-
-// mod constants;
-// mod poseidon2_gadget;
-// use poseidon2_gadget::Poseidon2Gadget;
-// use constants::from_hex;
-
-// fn main() {
-//     println!("Bắt đầu Test Mạch Poseidon2...");
-
-//     // Khởi tạo Constraint System giả lập để test mạch
-//     let mut cs = TestConstraintSystem::<Fr>::new();
-
-//     // Đầu vào giống hệt Test Vector của SageMath [0, 1, 2]
-//     let in_0 = AllocatedNum::alloc(cs.namespace(|| "in_0"), || Ok(Fr::from(0u64))).unwrap();
-//     let in_1 = AllocatedNum::alloc(cs.namespace(|| "in_1"), || Ok(Fr::from(1u64))).unwrap();
-//     let in_2 = AllocatedNum::alloc(cs.namespace(|| "in_2"), || Ok(Fr::from(2u64))).unwrap();
-    
-//     let initial_state = vec![in_0, in_1, in_2];
-
-//     // Chạy Mạch
-//     let mut hasher = Poseidon2Gadget::new(&mut cs, initial_state);
-//     let out_state = hasher.hash().unwrap();
-
-//     // ĐÃ CẬP NHẬT: Kết quả đầu ra dự kiến từ SageMath (Đường cong Vesta Base / Pallas Scalar)
-//     let expected_0 = from_hex("0x261ecbdfd62c617b82d297705f18c788fc9831b14a6a2b8f61229bef68ce2792");
-//     let expected_1 = from_hex("0x2c76327e0b7653873263158cf8545c282364b183880fcdea93ca8526d518c66f");
-//     let expected_2 = from_hex("0x262316c0ce5244838c75873299b59d763ae0849d2dd31bdc95caf7db1c2901bf");
-
-//     assert!(cs.is_satisfied());
-//     println!("Trạng thái mạch R1CS: Thỏa mãn (Satisfied)");
-//     println!("Số lượng ràng buộc (Constraints): {}", cs.num_constraints());
-
-//     let val_0 = out_state[0].get_value().unwrap();
-//     let val_1 = out_state[1].get_value().unwrap();
-//     let val_2 = out_state[2].get_value().unwrap();
-
-//     assert_eq!(val_0, expected_0, "Sai lệch giá trị state[0]");
-//     assert_eq!(val_1, expected_1, "Sai lệch giá trị state[1]");
-//     assert_eq!(val_2, expected_2, "Sai lệch giá trị state[2]");
-
-//     println!("KIỂM TRA THÀNH CÔNG: Mạch Gadget tạo ra Hash hoàn toàn khớp với SageMath/Python!");
-// }

@@ -24,7 +24,9 @@ pub fn from_hex(s: &str) -> Fr {
     for (i, &b) in bytes.iter().rev().enumerate() {
         repr[i] = b;
     }
-    Fr::from_repr(repr).expect("Lỗi khởi tạo phần tử trường")
+    
+    // ✅ Đã sửa: Bọc qua Option::from để xử lý CtOption của thư viện ff 0.12
+    Option::from(Fr::from_repr(repr)).expect("Lỗi khởi tạo phần tử trường")
 }
 
 lazy_static! {
@@ -107,16 +109,3 @@ lazy_static! {
         [from_hex("0x13a7785ae134ea92f1594a0763c611abb5e2ea3436eef957f1e4ccd73fa00a82"), from_hex("0x39fce308b7d43c574962ae3c0da17e313889c57863446d88bbf04f5252de4279"), from_hex("0x1aae18833f8e1d3ac0fdf01662f60d22bef00a08c6ed38d23b57e34489b53fad")],
     ];
 }
-
-/*
-=== TEST VECTORS FOR RUST MOCK ===
-Input State:
-in_0: 0x0000000000000000000000000000000000000000000000000000000000000000
-in_1: 0x0000000000000000000000000000000000000000000000000000000000000001
-in_2: 0x0000000000000000000000000000000000000000000000000000000000000002
-
-Expected Output State:
-out_0: 0x261ecbdfd62c617b82d297705f18c788fc9831b14a6a2b8f61229bef68ce2792
-out_1: 0x2c76327e0b7653873263158cf8545c282364b183880fcdea93ca8526d518c66f
-out_2: 0x262316c0ce5244838c75873299b59d763ae0849d2dd31bdc95caf7db1c2901bf
-*/

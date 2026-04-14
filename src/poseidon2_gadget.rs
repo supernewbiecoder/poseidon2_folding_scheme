@@ -26,7 +26,7 @@ impl<'a, CS: ConstraintSystem<Fr>> Poseidon2Gadget<'a, CS> {
 
         for i in 0..T {
             let mut lc = LinearCombination::zero();
-            let mut val = Some(Fr::ZERO);
+            let mut val = Some(Fr::ZERO); // Dùng ZERO của bản 0.13
 
             for j in 0..T {
                 lc = lc + (matrix[i][j], self.state[j].get_variable());
@@ -55,14 +55,11 @@ impl<'a, CS: ConstraintSystem<Fr>> Poseidon2Gadget<'a, CS> {
 
     pub fn hash(&mut self) -> Result<Vec<AllocatedNum<Fr>>, SynthesisError> {
         let half_f = R_F / 2;
-
-        // 0. Pre-mixing
         self.apply_matrix(true, "initial_premix")?;
 
         for r in 0..(R_F + R_P) {
             let is_full = r < half_f || r >= half_f + R_P;
 
-            // 1. Add Round Constants
             let mut state_after_rc = vec![];
             for i in 0..T {
                 let rc = RC[r][i];
@@ -82,11 +79,9 @@ impl<'a, CS: ConstraintSystem<Fr>> Poseidon2Gadget<'a, CS> {
             
             self.state = state_after_rc;
 
-            // 2. S-Box
             let mut state_after_sbox = vec![];
             for i in 0..T {
                 if is_full || i == 0 {
-                    // FIX TẠI ĐÂY: Tạo bản sao độc lập (clone) trước khi truyền vào sbox
                     let current_var = self.state[i].clone();
                     let sboxed_var = self.sbox(&current_var, &format!("r{}_sbox_i{}", r, i))?;
                     state_after_sbox.push(sboxed_var);
@@ -96,8 +91,6 @@ impl<'a, CS: ConstraintSystem<Fr>> Poseidon2Gadget<'a, CS> {
             }
 
             self.state = state_after_sbox;
-
-            // 3. Matrix Multiplication
             self.apply_matrix(is_full, &format!("r{}", r))?;
         }
 

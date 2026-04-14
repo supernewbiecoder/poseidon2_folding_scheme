@@ -1,0 +1,276 @@
+//=============================================================================
+// NOVA Folding Scheme - Proof of Space-Time (PoSt) Example
+//=============================================================================
+
+use bellpepper::gadgets::num::AllocatedNum;
+use bellpepper::ConstraintSystem;
+use bellpepper::SynthesisError;
+use nova_snark::{
+    traits::circuit::{StepCircuit, TrivialCircuit},
+    provider::{PallasEngine, VestaEngine},
+    RecursiveSNARK, PublicParams,
+};
+use pasta_curves::pallas::Scalar as Fr;
+use ff::Field;
+use rand::Rng;
+use std::time::Instant;
+
+mod constants;
+mod poseidon2_gadget;
+use poseidon2_gadget::Poseidon2Gadget;
+
+//=============================================================================
+// 1. DỮ LIỆU
+//=============================================================================
+
+#[derive(Clone, Debug)]
+pub struct DataSector {
+    pub id: u64,
+    pub data: Vec<u8>,
+    pub commitment: Fr,
+}
+
+#[derive(Clone, Debug)]
+pub struct PoStChallenge {
+    pub epoch: u64,
+    pub random_value: Fr,
+    pub target_sector_id: u64,
+}
+
+impl DataSector {
+    pub fn new(id: u64, data: Vec<u8>) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&data);
+        let hash_bytes = hasher.finalize();
+        
+        let mut commitment_bytes = [0u8; 32];
+        commitment_bytes.copy_from_slice(hash_bytes.as_bytes());
+        let commitment = Fr::from_repr_vartime(commitment_bytes).unwrap_or(Fr::ZERO);
+        
+        Self { id, data, commitment }
+    }
+}
+
+//=============================================================================
+// 2. STEP CIRCUIT (ĐƠN GIẢN HÓA)
+//=============================================================================
+
+#[derive(Clone, Debug)]
+pub struct PoStStepCircuit {
+    pub challenge_random: Fr,
+    pub sector_commitment: Fr,
+    pub epoch: Fr,
+}
+
+impl StepCircuit<Fr> for PoStStepCircuit {
+    fn arity(&self) -> usize {
+        1 // Output 1 giá trị
+    }
+
+    fn synthesize<CS: ConstraintSystem<Fr>>(
+        &self,
+        cs: &mut CS,
+        z_in: &[AllocatedNum<Fr>],
+    ) -> Result<Vec<AllocatedNum<Fr>>, SynthesisError> {
+        
+        // Lấy state từ bước trước
+        let z_prev = z_in[0].clone();
+        
+        // Tạo các biến đầu vào
+        let challenge_var = AllocatedNum::alloc(cs.namespace(|| "challenge"), || Ok(self.challenge_random))?;
+        let sector_var = AllocatedNum::alloc(cs.namespace(|| "sector"), || Ok(self.sector_commitment))?;
+        let epoch_var = AllocatedNum::alloc(cs.namespace(|| "epoch"), || Ok(self.epoch))?;
+        
+        // Kết hợp sector_commitment + epoch
+        let combined_data = AllocatedNum::alloc(cs.namespace(|| "combined"), || {
+            Ok(self.sector_commitment + self.epoch)
+        })?;
+        
+        // Ràng buộc: combined = sector + epoch
+        cs.enforce(
+            || "combine",
+            |lc| lc + sector_var.get_variable() + epoch_var.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + combined_data.get_variable(),
+        );
+        
+        // State cho Poseidon2: [prev_state, challenge, combined_data]
+        let initial_state = vec![z_prev, challenge_var, combined_data];
+        
+        // Hash
+        let mut hasher = Poseidon2Gadget::new(cs, initial_state);
+        let state_out = hasher.hash()?;
+        
+        // Output phần tử đầu tiên
+        Ok(vec![state_out[0].clone()])
+    }
+}
+
+//=============================================================================
+// 3. MAIN
+//=============================================================================
+
+fn main() {
+    println!("\n");
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║     PROOF OF SPACE-TIME (PoSt) WITH NOVA FOLDING SCHEME        ║");
+    println!("╚════════════════════════════════════════════════════════════════╝");
+    
+    //=========================================================================
+    // KHỞI TẠO DỮ LIỆU
+    //=========================================================================
+    println!("\n📁 PHASE 1: KHỞI TẠO DỮ LIỆU");
+    println!("─────────────────────────────────────────────────────────────────");
+    
+    let sector = DataSector::new(1, b"Important blockchain data".to_vec());
+    println!("   Sector ID: {}", sector.id);
+    println!("   Commitment: {:?}", sector.commitment);
+    
+    let initial_state = Fr::from(12345u64);
+    println!("   Initial state: {:?}", initial_state);
+    
+    //=========================================================================
+    // THIẾT LẬP THAM SỐ
+    //=========================================================================
+    println!("\n🔧 PHASE 2: THIẾT LẬP THAM SỐ CÔNG KHAI");
+    println!("─────────────────────────────────────────────────────────────────");
+    
+    let circuit_primary = PoStStepCircuit {
+        challenge_random: Fr::ZERO,
+        sector_commitment: Fr::ZERO,
+        epoch: Fr::ZERO,
+    };
+    let circuit_secondary = TrivialCircuit::default();
+    
+    println!("   Đang tạo PublicParams (có thể mất vài giây)...");
+    let start_setup = Instant::now();
+    
+    let pp = PublicParams::<
+        PallasEngine,
+        VestaEngine,
+        PoStStepCircuit,
+        TrivialCircuit<Fr>,
+    >::setup(
+        &circuit_primary,
+        &circuit_secondary,
+        &*nova_snark::constants::ck_hint(),
+        &*nova_snark::constants::ck_hint(),
+    );
+    
+    println!("   ✅ Hoàn tất sau {:?}", start_setup.elapsed());
+    
+    //=========================================================================
+    // KHỞI TẠO SNARK
+    //=========================================================================
+    println!("\n🚀 PHASE 3: KHỞI TẠO RECURSIVE SNARK");
+    println!("─────────────────────────────────────────────────────────────────");
+    
+    let z0_primary = vec![initial_state];
+    let z0_secondary = vec![Fr::ZERO];
+    
+    let mut recursive_snark = RecursiveSNARK::new(
+        &pp,
+        &circuit_primary,
+        &circuit_secondary,
+        &z0_primary,
+        &z0_secondary,
+    ).expect("Lỗi khởi tạo SNARK");
+    
+    println!("   ✅ SNARK khởi tạo thành công");
+    
+    //=========================================================================
+    // CHẠY CÁC EPOCH
+    //=========================================================================
+    println!("\n⏰ PHASE 4: CHẠY CÁC EPOCH");
+    println!("─────────────────────────────────────────────────────────────────");
+    
+    let num_epochs = 5;
+    let mut rng = rand::thread_rng();
+    
+    for epoch in 0..num_epochs {
+        println!("\n   ═══════════════════════════════════════════════════════");
+        println!("   📍 EPOCH {} / {}", epoch + 1, num_epochs);
+        
+        let challenge_random = Fr::from(rng.gen::<u64>());
+        let epoch_fr = Fr::from(epoch as u64);
+        
+        println!("      🎲 Challenge random: {:?}", challenge_random);
+        println!("      📅 Epoch: {}", epoch);
+        
+        let step_circuit = PoStStepCircuit {
+            challenge_random,
+            sector_commitment: sector.commitment,
+            epoch: epoch_fr,
+        };
+        
+        let start_prove = Instant::now();
+        
+        let result = recursive_snark.prove_step(
+            &pp,
+            &step_circuit,
+            &circuit_secondary,
+        );
+        
+        match result {
+            Ok(_) => {
+                println!("      ✅ Folding thành công sau {:?}", start_prove.elapsed());
+            }
+            Err(e) => {
+                println!("      ❌ Lỗi: {:?}", e);
+                return;
+            }
+        }
+    }
+    
+    //=========================================================================
+    // XÁC MINH
+    //=========================================================================
+    println!("\n🔍 PHASE 5: XÁC MINH BẰNG CHỨNG");
+    println!("─────────────────────────────────────────────────────────────────");
+    
+    let start_verify = Instant::now();
+    
+    let verify_result = recursive_snark.verify(
+        &pp,
+        num_epochs,
+        &z0_primary,
+        &z0_secondary,
+    );
+    
+    println!("   ⏱️  Thời gian verify: {:?}", start_verify.elapsed());
+    
+    //=========================================================================
+    // KẾT LUẬN
+    //=========================================================================
+    println!("\n🎯 PHASE 6: KẾT LUẬN");
+    println!("─────────────────────────────────────────────────────────────────");
+    
+    match verify_result {
+        Ok((final_state, _)) => {
+            println!("\n╔════════════════════════════════════════════════════════════════╗");
+            println!("║  ✅✅✅  XÁC MINH THÀNH CÔNG!  ✅✅✅                            ║");
+            println!("║                                                                ║");
+            println!("║  Final state: {:?}", final_state[0]);
+            println!("║  Số epochs đã fold: {}", num_epochs);
+            println!("║  Kích thước bằng chứng: O(1) - không đổi theo số epochs      ║");
+            println!("╚════════════════════════════════════════════════════════════════╝");
+        }
+        Err(e) => {
+            println!("\n╔════════════════════════════════════════════════════════════════╗");
+            println!("║  ❌❌❌  XÁC MINH THẤT BẠI!  ❌❌❌                            ║");
+            println!("║  Lỗi: {:?}", e);
+            println!("╚════════════════════════════════════════════════════════════════╝");
+        }
+    }
+    
+    //=========================================================================
+    // THỐNG KÊ
+    //=========================================================================
+    println!("\n📊 THỐNG KÊ");
+    println!("─────────────────────────────────────────────────────────────────");
+    println!("   - Hash function: Poseidon2 (ZK-friendly)");
+    println!("   - Folding scheme: NOVA (Pallas-Vesta cycle)");
+    println!("   - Kích thước bằng chứng: ~{} bytes", std::mem::size_of_val(&recursive_snark));
+    println!("   - Thời gian prove: O(n) với n = số epochs");
+    println!("   - Thời gian verify: O(1) - rất nhanh, phù hợp on-chain");
+}
