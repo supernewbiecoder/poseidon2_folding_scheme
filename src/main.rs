@@ -24,23 +24,23 @@ pub struct DataSector {
 
 impl DataSector {
     pub fn new(id: u64, data: Vec<u8>) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&data);
-        let hash_bytes = hasher.finalize();
+        let mut hasher = blake3::Hasher::new();//tạo bộ băm mới
+        hasher.update(&data);//đưa dữ liệu vào bộ băm
+        let hash_bytes = hasher.finalize();//lấy kết quả băm dưới dạng 32 bytes
         
-        let mut commitment_bytes = [0u8; 32];
-        commitment_bytes.copy_from_slice(hash_bytes.as_bytes());
-        let commitment = Option::from(Fr::from_repr(commitment_bytes)).unwrap_or(Fr::ZERO);
+        let mut commitment_bytes = [0u8; 32]; //mảng 32 số 0
+        commitment_bytes.copy_from_slice(hash_bytes.as_bytes()); // copy 32 byte từ hash vào mảng
+        let commitment = Option::from(Fr::from_repr(commitment_bytes)).unwrap_or(Fr::ZERO);//Chuyển 32 byte thành số trong trường hữu hạn (Fr), nếu lỗi thì dùng số 0
         
-        Self { id, data, commitment }
+        Self { id, data, commitment }// Trả về struct mới
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct PoStStepCircuit {
-    pub challenge_random: Fr,
-    pub sector_commitment: Fr,
-    pub epoch: Fr,
+    pub challenge_random: Fr, // thử thách ngẫu nhiên
+    pub sector_commitment: Fr,//hash của dữ liệu
+    pub epoch: Fr,//số thứ tự thời gian (epoch)
 }
 
 impl StepCircuit<Fr> for PoStStepCircuit {
@@ -82,9 +82,15 @@ fn main() {
     println!("║     PROOF OF SPACE-TIME (PoSt) WITH NOVA FOLDING SCHEME        ║");
     println!("╚════════════════════════════════════════════════════════════════╝");
     
-    let sector = DataSector::new(1, b"Important blockchain data".to_vec());
+    //khởi tạo dữ liệu
+    //let sector: Tạo biến tên sector
+    //DataSector::new(): Gọi hàm new của struct DataSector
+    //b"...": Byte string literal (kiểu &[u8; 26])
+    //.to_vec(): Chuyển thành Vec<u8> (vector các byte)
+    let sector = DataSector::new(1, b"Important blockchain data".to_vec()); // ✅ Tạo một sector với dữ liệu mẫu
     let initial_state = Fr::from(12345u64);
     
+    //tạo circuit chính (primary circuit) với các tham số ban đầu, bao gồm giá trị ngẫu nhiên cho challenge, cam kết của sector và epoch
     let circuit_primary = PoStStepCircuit {
         challenge_random: Fr::ZERO,
         sector_commitment: Fr::ZERO,
@@ -92,10 +98,23 @@ fn main() {
     };
     
     // ✅ Sửa lỗi TrivialCircuit cho đúng chuẩn 0.34.0
-    let circuit_secondary = TrivialCircuit::<<VestaEngine as Engine>::Scalar>::default();
+    let circuit_secondary = TrivialCircuit::<<VestaEngine as Engine>::Scalar>::default(); //circuit phụ (secondary circuit) đơn giản, không có logic nào, chỉ để hỗ trợ quá trình folding của SNARK
     
     println!("\n🔧 Đang thiết lập Public Params...");
     let start_setup = Instant::now();
+    //thiết lập tham số công khai (public parameters) cho SNARK
+    //PallasEngine vs VestaEngine:
+        //Pallas: Dùng cho primary proof (bằng chứng chính)
+        //Vesta: Dùng cho secondary proof (hỗ trợ folding)
+        //Chúng là "cặp curve" (cycle of curves) - đặc biệt cho Nova
+    //&circuit_primary:
+        //Dấu & nghĩa là mượn (borrow), không lấy ownership, truyền tham chiếu đến circuit_primary
+        //Truyền circuit mẫu để setup biết cấu trúc và các ràng buộc cần thiết cho quá trình tạo bằng chứng
+    //&*default_ck_hint():
+        //default_ck_hint(): Trả về Box<dyn CommitmentKeyHint> (hộp chứa trait object)
+        //*: Dereference (lấy giá trị bên trong Box)
+        // //&: Mượn giá trị đó
+        // Mục đích: Tối ưu hóa việc tạo commitment key
     let pp = PublicParams::<
         PallasEngine,
         VestaEngine,
@@ -109,9 +128,9 @@ fn main() {
     );
     println!("   ✅ Hoàn tất sau {:?}", start_setup.elapsed());
     
-    let z0_primary = vec![initial_state];
-    let z0_secondary = vec![<VestaEngine as Engine>::Scalar::ZERO];
-    
+    let z0_primary = vec![initial_state];//vector chứa trạng thái ban đầu cho primary circuit
+    let z0_secondary = vec![<VestaEngine as Engine>::Scalar::ZERO];//vector chứa trạng thái ban đầu cho secondary circuit (đơn giản là số 0)
+    //tạo SNARK đệ quy với các tham số đã thiết lập và trạng thái ban đầu
     let mut recursive_snark = RecursiveSNARK::new(
         &pp,
         &circuit_primary,
@@ -123,7 +142,7 @@ fn main() {
     println!("\n⏰ Bắt đầu chạy các Epoch...");
     let num_epochs = 3;
     let mut rng = rand::thread_rng();
-    
+    //chạy các epoch để tạo bằng chứng cho mỗi bước, sử dụng dữ liệu sector và các tham số ngẫu nhiên
     for epoch in 0..num_epochs {
         let challenge_random = Fr::from(rng.gen::<u64>());
         let epoch_fr = Fr::from(epoch as u64);
