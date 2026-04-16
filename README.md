@@ -3,7 +3,7 @@
 Sau đây là mô tả giả lập trong bài báo phần 3.4.
 
 1. Gọi $p$ là nhà cung cấp lưu trữ chịu trách nhiệm cho một tập hợp con các chỉ mục phân mảnh do giao thức xác định cho đối tượng $D_i$. 
-   Giả sử$$A_{i,p} \subseteq \{1, \dots, n\} \quad$$
+   Giả sử: $A_{i,p} \subseteq \{1, \dots, n\} \quad$
    >Ý nghĩa: Giả sử file $D_i$ được chia thành $n$ mảnh (từ 1 đến $n$). Một nhà cung cấp có tên là $p$ sẽ được giao cho một tập hợp vài mảnh trong số đó. Tập hợp các mảnh mà $p$ phải giữ được gọi là $A_{i,p}$.
 
    **Yêu cầu**: tại mỗi thử thách (challange), p (nhà cung cấp lưu trữ) cần phải gửi bằng chứng để chứng minh nó đang giữ dữ liệu
@@ -11,7 +11,9 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
    :arrow_right: Trong giả lập, p là nhà cung cấp duy nhất trong đó cam kết sẽ lưu trữ data các shards (phân mảnh), **trong giả lập này em chỉ cho phép tối đa có 8 phân mảnh**
 
 2. Tạo thử thách: 
-   $$J_{i,p,t} = \text{Chal}(c^{stor}_i, A_{i,p}, \eta_t, p)$$
+
+   - $J_{i,p,t} = \text{Chal}(c^{stor}_i, A_{i,p}, \eta_t, p)$
+
    >Ở một thời điểm $t$ (kỷ nguyên $t$), hệ thống không bắt $p$ gửi lại toàn bộ các mảnh đang giữ (vì thế tốn rất nhiều băng thông). Hệ thống dùng hàm $\text{Chal}$ (Challenge - Thử thách) để chọn ngẫu nhiên một vài mảnh trong tay $p$ để kiểm tra.
    
    Các biến số:
@@ -23,7 +25,7 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
    Kết quả: $J_{i,p,t}$ là danh sách các chỉ mục (ví dụ: "Hãy đưa tôi xem mảnh số 3, số 7 và số 12").
    :arrow_right: Tại mỗi challange, hệ thống sẽ đưa ra một mảng các shard ngẫu nhiên mà p phải chứng minh. **Hiện nay thì em để mặc định là p phải chứng minh 4 shards trong 1 lần challange**, nếu như p giữ ít hơn 4 shard thì p sẽ phải tự chứng minh 1 shard nhiều lần.
 3. Tạo bí mật (chỉ p biết)
-   $$w_{i,p,t} := \{(s_{i,j}, \text{path}_{i,j}) : j \in J_{i,p,t}\}$$
+    - $w_{i,p,t} := \{(s_{i,j}, \text{path}_{i,j}) : j \in J_{i,p,t}\}$
    - $s_{i,j}$: Nội dung thực sự của mảnh dữ liệu đó.
    - $\text{path}_{i,j}$: Đường dẫn xác thực Merkle Path (chứng minh mảnh $s_{i,j}$ này thực sự thuộc về gốc $c^{stor}_i$ trong đề bài).
    > ứng với mỗi shard mà p phải chứng minh trong một challange, p sẽ phải tạo ra witness tương ứng. **Rồi nối với nhau tạo thành một tập các witness cho một challange**
@@ -84,18 +86,20 @@ Sau khi chạy `node report_simulator.js`, hệ thống sẽ cần bạn:
 ## Rút ra được từ kết quả chạy
 1. Số lượng constrant trong hệ phương trình R1CS:
 - Ở trong code demo, số lượng constraint mặc định cho R1CS e đang để ở dạng hằng số: 3648, tuy nhiên thì thực tế số lượng constraints bị ảnh hưởng bởi: C: constraints
- $$C \approx k \cdot (d \cdot C_{hash})$$
+   - $C \approx k \cdot (d \cdot C_{hash})$
    - k: số lượng thử thách trong 1 batch
    - d: độ sâu của cây merkle tree: ví dụ $2^3=8$  shards thì $d=3$
    - $C_{hash}:$ số ràng buộc của hàm băm ($poseidon \approx 300 $, $SHA256 \approx 30,000$)
 2. Thời gian proof: ($T_{prove}$)
 Đây là công việc nặng nhất, phụ thuộc vào tốc độ máy tính giải hệ phương trình $C$.
-$$T_{prove} = C \cdot \tau + T_{wit}$$
+- $T_{prove} = C \cdot \tau + T_{wit}$
 - $\tau$: Thời gian xử lý một ràng buộc trên CPU/GPU cụ thể.
 - $T_{wit}$: Thời gian trích xuất dữ liệu từ ổ cứng (Witness generation).
 3. Kích thước Proof ($S_{\pi}$)
 Với Groth16, bằng chứng là 3 điểm trên đường cong Elliptic ($A, B, C$).
-$$S_{\pi} \approx 3 \cdot \text{size}(\text{EllipticPoint}) = \text{Constant}$$Dù bạn kiểm tra 1 triệu file, bằng chứng gửi đi vẫn chỉ nặng tầm 128 - 800 Bytes. Đây là lý do ZKP cực kỳ tiết kiệm băng thông.
+$S_{\pi} \approx 3 \cdot \text{size}(\text{EllipticPoint}) = \text{Constant}$
+Dù bạn kiểm tra 1 triệu file, bằng chứng gửi đi vẫn chỉ nặng tầm 128 - 800 Bytes. Đây là lý do ZKP cực kỳ tiết kiệm băng thông.
 4. Phân tích Xác suất Gian lận
-- Nếu một Provider xóa mất $m$ phân mảnh trong tổng số $n$ phân mảnh, xác suất để Provider đó vượt qua được một thử thách gồm $k$ chỉ số ngẫu nhiên là:$$P_{cheat} = \frac{\binom{n-m}{k}}{\binom{n}{k}}$$
+- Nếu một Provider xóa mất $m$ phân mảnh trong tổng số $n$ phân mảnh, xác suất để Provider đó vượt qua được một thử thách gồm $k$ chỉ số ngẫu nhiên là: 
+$P_{cheat} = \frac{\binom{n-m}{k}}{\binom{n}{k}}$
 - Ví dụ trong demo ($n=8, k=4$): Nếu Provider xóa 1 mảnh ($m=1$), xác suất để mạng lưới chọn trúng mảnh đó là $50\%$. Nếu chạy 5 Epochs, xác suất gian lận thành công chỉ còn $(0.5)^5 \approx 3\%$. Đây là lý do tại sao hệ thống cần chạy định kỳ (Recurring)
