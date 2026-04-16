@@ -12,7 +12,7 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
 
 2. Tạo thử thách: 
 
-    $J_{i,p,t} = \text{Chal}(c^{stor}_i, A_{i,p}, \eta_t, p)$
+    $J_{i,p,t} = \text{Chal}(c_{i}^{stor}, A_{i,p}, \eta_{t}, p)$
 
    >Ở một thời điểm $t$ (kỷ nguyên $t$), hệ thống không bắt $p$ gửi lại toàn bộ các mảnh đang giữ (vì thế tốn rất nhiều băng thông). Hệ thống dùng hàm $\text{Chal}$ (Challenge - Thử thách) để chọn ngẫu nhiên một vài mảnh trong tay $p$ để kiểm tra.
    
@@ -52,6 +52,7 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
    - Kích thước nhỏ nhất: Trong các loại zk-SNARK, Groth16 cho ra bằng chứng có kích thước nhỏ nhất thế giới (chỉ khoảng 128-800 bytes).
 5. Hạt giống thử thách ngẫu nhiên (Public Challenge Seed - $\eta_t$)
  - Thiết lập: Sinh ra ngẫu nhiên tại mỗi Epoch $t$ từ phía mạng lưới.
+
 ## Môi trường và dependency cần thiết
 1. Nodejs & npm: Dùng để chạy mã mô phỏng và thư viện snarkjs
 2. Rust & Cargo: Dùng để biên dịch circom từ mã nguồn. Tải rustup-init.exe tại https://rustup.rs/ và cài đặt (cứ ấn Enter chọn default)
@@ -75,12 +76,15 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
       > Lưu ý: Phần Trusted Setup: bước này sinh ra file pot14. Lý do có sô 14 là vì $2^{14} = 16,384$, đủ để chứa 3,648 constraints của em. Nếu dùng 12 ($2^{12} = 4,096$) thì vẫn được nhưng sẽ sát nút hơn nhưng thực tế với lượng constraints là 3.648 thì dùng 12 nó có thể bị tràn số.
 5. Chạy Mô phỏng (Simulator): Sau khi Bước 3 hoàn tất, bạn sẽ thấy file verification_key.json xuất hiện trong thư mục. Lúc này mọi thứ đã sẵn sàng, hãy chạy file mô phỏng báo cáo
 - `node report_simulator.js`
+
 ## DEMO
 Sau khi chạy `node report_simulator.js`, hệ thống sẽ cần bạn:
 - nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau bằng dấu phẩy, tối đa 8 mục) (hiện tại mới chỉ demo 8 mục, tức là độ sâu của cây sẽ = 3 thôi, do là cây merkle tree).
+
 ```Xin lưu ý cho, dữ liệu phân mảnh cần lưu trữ chính là dữ liệu mà p (storage provider) cam kết sẽ lưu trữ```
 
 - nhập số vòng kiểm tra (Epochs).
+
 ``` mỗi một epoch mới sẽ sinh ra một challange ngẫu nhiên mới```
 
 ## Rút ra được từ kết quả chạy
