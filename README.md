@@ -12,7 +12,7 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
 
 2. Tạo thử thách: 
 
-   - $J_{i,p,t} = \text{Chal}(c^{stor}_i, A_{i,p}, \eta_t, p)$
+    $J_{i,p,t} = \text{Chal}(c^{stor}_i, A_{i,p}, \eta_t, p)$
 
    >Ở một thời điểm $t$ (kỷ nguyên $t$), hệ thống không bắt $p$ gửi lại toàn bộ các mảnh đang giữ (vì thế tốn rất nhiều băng thông). Hệ thống dùng hàm $\text{Chal}$ (Challenge - Thử thách) để chọn ngẫu nhiên một vài mảnh trong tay $p$ để kiểm tra.
    
