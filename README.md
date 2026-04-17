@@ -25,9 +25,7 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
    Kết quả: $J_{i,p,t}$ là danh sách các chỉ mục (ví dụ: "Hãy đưa tôi xem mảnh số 3, số 7 và số 12").
    :arrow_right: Tại mỗi challange, hệ thống sẽ đưa ra một mảng các shard ngẫu nhiên mà p phải chứng minh. **Hiện nay thì em để mặc định là p phải chứng minh 4 shards trong 1 lần challange**, nếu như p giữ ít hơn 4 shard thì p sẽ phải tự chứng minh 1 shard nhiều lần.
 3. Tạo bí mật (chỉ p biết)
-    - $$
-w_{i,p,t} := \{(s_{i,j}, \text{path}_{i,j}) : j \in J_{i,p,t}\}
-$$
+    - $w_{i,p,t}:=\{(s_{i,j},\text{path}_{i,j}):j \in J_{i,p,t}\}$
    - $s_{i,j}$: Nội dung thực sự của mảnh dữ liệu đó.
    - $\text{path}_{i,j}$: Đường dẫn xác thực Merkle Path (chứng minh mảnh $s_{i,j}$ này thực sự thuộc về gốc $c^{stor}_{i}$ trong đề bài).
    > ứng với mỗi shard mà p phải chứng minh trong một challange, p sẽ phải tạo ra witness tương ứng. **Rồi nối với nhau tạo thành một tập các witness cho một challange**
