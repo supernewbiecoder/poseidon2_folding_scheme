@@ -13,57 +13,117 @@ use std::io::{self, Write};
 mod constants;
 mod poseidon2_gadget;
 use poseidon2_gadget::Poseidon2Gadget;
+use constants::{MAT_FULL, MAT_PARTIAL, RC, R_F, R_P, T};
 
 // ==========================================
-// 1. MÔ PHỎNG DỮ LIỆU & MERKLE TREE (HOST)
+// 1. HÀM POSEIDON2 NATIVE (DÀNH CHO HOST)
+// ==========================================
+// Cần hàm này để Host tự dựng cây Merkle bằng Poseidon2 giống hệt mạch ZK
+fn sbox(x: Fr) -> Fr {
+    let x2 = x.square();
+    let x4 = x2.square();
+    x4 * x // x^5
+}
+
+pub fn native_poseidon2(left: Fr, right: Fr) -> Fr {
+    let mut state = [left, right, Fr::ZERO];
+    let half_f = R_F / 2;
+
+    // First matrix multiplication
+    let mut new_state = [Fr::ZERO; 3];
+    for i in 0..T {
+        for j in 0..T { new_state[i] += MAT_FULL[i][j] * state[j]; }
+    }
+    state = new_state;
+
+    // Rounds
+    for r in 0..(R_F + R_P) {
+        let is_full = r < half_f || r >= half_f + R_P;
+        
+        // Add Round Constants
+        for i in 0..T { state[i] += RC[r][i]; }
+
+        // S-Box
+        for i in 0..T {
+            if is_full || i == 0 { state[i] = sbox(state[i]); }
+        }
+
+        // Matrix Multiplication
+        let matrix = if is_full { &*MAT_FULL } else { &*MAT_PARTIAL };
+        let mut new_state = [Fr::ZERO; 3];
+        for i in 0..T {
+            for j in 0..T { new_state[i] += matrix[i][j] * state[j]; }
+        }
+        state = new_state;
+    }
+    state[0] // Trả về phần tử đầu tiên làm kết quả hash
+}
+
+// ==========================================
+// 2. MÔ PHỎNG DỮ LIỆU & MERKLE TREE (HOST)
 // ==========================================
 #[derive(Clone, Debug)]
 pub struct DataSector {
-    pub shards: Vec<String>,
+    pub leaves: Vec<Fr>,
+    pub tree: Vec<Vec<Fr>>,
     pub commitment_root: Fr,
 }
 
 impl DataSector {
     pub fn new(raw_shards: Vec<&str>) -> Self {
-        // Đệm cho đủ 8 shards (Mô phỏng cây Merkle Depth = 3)
-        let mut shards: Vec<String> = raw_shards.iter().map(|s| s.to_string()).collect();
-        while shards.len() < 8 {
-            shards.push("0".to_string());
+        // Chuyển string thành Fr và padding lên 8 leaves
+        let mut leaves: Vec<Fr> = raw_shards.iter().map(|s| {
+            let mut bytes = [0u8; 32];
+            let s_bytes = s.as_bytes();
+            let len = std::cmp::min(32, s_bytes.len());
+            bytes[..len].copy_from_slice(&s_bytes[..len]);
+            Option::from(Fr::from_repr(bytes)).unwrap_or(Fr::ZERO)
+        }).collect();
+        
+        while leaves.len() < 8 { leaves.push(Fr::ZERO); }
+
+        // Dựng cây Merkle bằng native_poseidon2
+        let mut tree = vec![leaves.clone()];
+        let mut current_level = leaves.clone();
+        
+        while current_level.len() > 1 {
+            let mut next_level = vec![];
+            for i in (0..current_level.len()).step_by(2) {
+                next_level.push(native_poseidon2(current_level[i], current_level[i+1]));
+            }
+            tree.push(next_level.clone());
+            current_level = next_level;
         }
 
-        // Mô phỏng tạo Merkle Root bằng thuật toán băm nội bộ
-        let mut hasher = blake3::Hasher::new();
-        for shard in &shards {
-            hasher.update(shard.as_bytes());
-        }
-        let hash_bytes = hasher.finalize();
-        let mut commitment_bytes = [0u8; 32];
-        commitment_bytes.copy_from_slice(hash_bytes.as_bytes());
-        let root = Option::from(Fr::from_repr(commitment_bytes)).unwrap_or(Fr::ZERO);
-        
-        Self { shards, commitment_root: root }
+        Self { leaves, tree: tree.clone(), commitment_root: current_level[0] }
     }
 
-    // Mô phỏng lấy dữ liệu shard
-    pub fn get_shard_hash(&self, index: usize) -> Fr {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(self.shards[index].as_bytes());
-        let hash_bytes = hasher.finalize();
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(hash_bytes.as_bytes());
-        Option::from(Fr::from_repr(bytes)).unwrap_or(Fr::ZERO)
+    // Lấy Merkle Path (Witness)
+    pub fn get_proof(&self, index: usize) -> (Fr, Vec<Fr>, Vec<Fr>) {
+        let mut path_elements = vec![];
+        let mut path_indices = vec![];
+        let mut current_idx = index;
+
+        for level in 0..3 {
+            let is_right = current_idx % 2 == 1;
+            let sibling_idx = if is_right { current_idx - 1 } else { current_idx + 1 };
+            
+            path_elements.push(self.tree[level][sibling_idx]);
+            path_indices.push(if is_right { Fr::ONE } else { Fr::ZERO }); // 1 = Left sibling, 0 = Right sibling
+            current_idx /= 2;
+        }
+        (self.leaves[index], path_elements, path_indices)
     }
 }
 
 // ==========================================
-// 2. MẠCH ZK BƯỚC ĐƠN (STEP CIRCUIT) - POSEIDON2
+// 3. MẠCH ZK BƯỚC ĐƠN: KIỂM TRA MERKLE PATH
 // ==========================================
-// Mạch này chỉ chịu trách nhiệm kiểm tra đúng MỘT (01) Shard.
-// Kích thước cố định, không bị phình to theo Batch Size.
 #[derive(Clone, Debug)]
 pub struct PoStStepCircuit {
-    pub challenge_index: Fr,
-    pub shard_hash: Fr,
+    pub leaf: Fr,
+    pub path_elements: Vec<Fr>,
+    pub path_indices: Vec<Fr>,
     pub expected_root: Fr,
 }
 
@@ -76,142 +136,156 @@ impl StepCircuit<Fr> for PoStStepCircuit {
         z_in: &[AllocatedNum<Fr>],
     ) -> Result<Vec<AllocatedNum<Fr>>, SynthesisError> {
         
-        let z_prev = z_in[0].clone(); // State từ bước fold trước
-        
-        let challenge_var = AllocatedNum::alloc(cs.namespace(|| "challenge_idx"), || Ok(self.challenge_index))?;
-        let shard_var = AllocatedNum::alloc(cs.namespace(|| "shard_hash"), || Ok(self.shard_hash))?;
-        
-        // Trạng thái cho Poseidon2 Gadget: T = 3
-        let initial_state = vec![z_prev, challenge_var, shard_var];
-        
-        // Chạy hàm băm Poseidon2 siêu tối ưu
-        let mut hasher = Poseidon2Gadget::new(cs, initial_state);
-        let state_out = hasher.hash()?;
-        
-        // Output trạng thái mới để chuyển sang bước Fold tiếp theo
-        Ok(vec![state_out[0].clone()])
+        // z_in[0] có thể dùng làm bộ đếm số lần fold (Counter), hiện ta bỏ qua
+        let z_prev = z_in[0].clone(); 
+        let expected_root_var = AllocatedNum::alloc(cs.namespace(|| "expected_root"), || Ok(self.expected_root))?;
+        let zero_var = AllocatedNum::alloc(cs.namespace(|| "zero_cap"), || Ok(Fr::ZERO))?;
+
+        let mut current_hash = AllocatedNum::alloc(cs.namespace(|| "leaf"), || Ok(self.leaf))?;
+
+        // ---------------------------------------------------------
+        // MERKLE INCLUSION PROOF LOGIC (Mô phỏng MUX)
+        // ---------------------------------------------------------
+        for i in 0..self.path_elements.len() {
+            let sibling = AllocatedNum::alloc(cs.namespace(|| format!("sibling_{}", i)), || Ok(self.path_elements[i]))?;
+            let index = AllocatedNum::alloc(cs.namespace(|| format!("index_{}", i)), || Ok(self.path_indices[i]))?;
+
+            // Ràng buộc boolean: index * (1 - index) = 0
+            cs.enforce(
+                || format!("boolean_index_{}", i),
+                |lc| lc + index.get_variable(),
+                |lc| lc + CS::one() - index.get_variable(),
+                |lc| lc,
+            );
+
+            // Logic MUX Toán học: 
+            // left = current - index * (current - sibling)
+            // right = sibling + index * (current - sibling)
+            let diff_val = current_hash.get_value().zip(sibling.get_value()).map(|(c, s)| c - s);
+            let left_val = current_hash.get_value().zip(index.get_value()).zip(diff_val).map(|((c, idx), diff)| c - idx * diff);
+            let right_val = sibling.get_value().zip(index.get_value()).zip(diff_val).map(|((s, idx), diff)| s + idx * diff);
+
+            let left = AllocatedNum::alloc(cs.namespace(|| format!("left_{}", i)), || left_val.ok_or(SynthesisError::AssignmentMissing))?;
+            let right = AllocatedNum::alloc(cs.namespace(|| format!("right_{}", i)), || right_val.ok_or(SynthesisError::AssignmentMissing))?;
+
+            // Ràng buộc MUX Left
+            cs.enforce(
+                || format!("mux_left_{}", i),
+                |lc| lc + index.get_variable(),
+                |lc| lc + current_hash.get_variable() - sibling.get_variable(),
+                |lc| lc + current_hash.get_variable() - left.get_variable(),
+            );
+
+            // Ràng buộc MUX Right
+            cs.enforce(
+                || format!("mux_right_{}", i),
+                |lc| lc + index.get_variable(),
+                |lc| lc + current_hash.get_variable() - sibling.get_variable(),
+                |lc| lc + right.get_variable() - sibling.get_variable(),
+            );
+
+            // Tính Poseidon2(left, right, 0)
+            let hash_inputs = vec![left, right, zero_var.clone()];
+            let mut ns = cs.namespace(|| format!("poseidon_{}", i));
+            let mut hasher = Poseidon2Gadget::new(&mut ns, hash_inputs);
+            let hash_out = hasher.hash()?;
+            current_hash = hash_out[0].clone();
+        }
+
+        // ---------------------------------------------------------
+        // RÀNG BUỘC TỐI THƯỢNG: Hash cuối cùng PHẢI BẰNG Root cam kết
+        // ---------------------------------------------------------
+        cs.enforce(
+            || "enforce_merkle_root",
+            |lc| lc + current_hash.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + expected_root_var.get_variable(),
+        );
+
+        Ok(vec![z_prev]) // Trả về z_prev để mạch duy trì trạng thái đệ quy
     }
 }
 
 // ==========================================
-// 3. GIAO DIỆN CLI VÀ LUỒNG FOLDING SCHEME
+// 4. MAIN & CLI
 // ==========================================
 fn main() {
     println!("\n======================================================================");
-    println!("      MÔ PHỎNG GIAO THỨC ENGRAM (POSEIDON2 + NOVA FOLDING)");
+    println!("  MÔ PHỎNG GIAO THỨC ENGRAM (POSEIDON2 + NOVA + MERKLE PROOF)");
     println!("======================================================================\n");
 
-    // --- BƯỚC 1: NHẬP DỮ LIỆU TỪ CLI ---
-    print!("[Hệ thống] Nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau bằng dấu phẩy, tối đa 8 mục):\n> ");
+    print!("[Hệ thống] Nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau dấu phẩy, tối đa 8):\n> ");
     io::stdout().flush().unwrap();
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
     let raw_shards: Vec<&str> = input.trim().split(',').filter(|s| !s.is_empty()).collect();
 
-    print!("\n[Provider] Đang băm dữ liệu và dựng cây Merkle...");
+    print!("\n[Provider] Đang băm dữ liệu bằng Native Poseidon2 và dựng cây Merkle...");
     io::stdout().flush().unwrap();
     let sector = DataSector::new(raw_shards);
     
     println!("\n\n[ BÁO CÁO CAM KẾT - PHASE 1 ]");
-    println!("- Số lượng phân mảnh     : {} shards (Padding lên 8)", sector.shards.len());
-    println!("- Mã cam kết (c_stor_i)  : {:?}", sector.commitment_root);
-    // Poseidon2 tốn ~240 constraints, cộng các phép gán biến ~10 -> tổng < 260
-    println!("- Kích thước mạch ZK     : ~260 Constraints (Cố định nhờ Folding!)"); 
+    println!("- Mã cam kết (Root) : {:?}", sector.commitment_root);
+    // Depth = 3 -> 3 lần băm Poseidon2 (~720 constraints) + Constraints cho Mux/Boolean
+    println!("- Kích thước mạch   : ~750 Constraints (Mạch đã bao gồm Merkle Inclusion!)"); 
 
-    // --- BƯỚC 2: SETUP NOVA (TRUSTED SETUP) ---
-    print!("\n[Network] Đang thiết lập Nova Public Params (Lần đầu tiên sẽ tốn vài giây)...");
+    print!("\n[Network] Đang thiết lập Nova Public Params...");
     io::stdout().flush().unwrap();
-    let start_setup = Instant::now();
     
     let circuit_primary = PoStStepCircuit {
-        challenge_index: Fr::ZERO,
-        shard_hash: Fr::ZERO,
+        leaf: Fr::ZERO,
+        path_elements: vec![Fr::ZERO; 3],
+        path_indices: vec![Fr::ZERO; 3],
         expected_root: Fr::ZERO,
     };
     let circuit_secondary = TrivialCircuit::<<VestaEngine as Engine>::Scalar>::default(); 
     
     let pp = PublicParams::<PallasEngine, VestaEngine, PoStStepCircuit, TrivialCircuit<<VestaEngine as Engine>::Scalar>>::setup(
-        &circuit_primary,
-        &circuit_secondary,
-        &*nova_snark::traits::snark::default_ck_hint(),
-        &*nova_snark::traits::snark::default_ck_hint(),
+        &circuit_primary, &circuit_secondary, &*nova_snark::traits::snark::default_ck_hint(), &*nova_snark::traits::snark::default_ck_hint()
     );
-    println!(" ✅ Xong ({:?})", start_setup.elapsed());
+    println!(" ✅ Xong");
 
-    // --- BƯỚC 3: SỐ LƯỢNG EPOCH ---
     print!("\n[Hệ thống] Bạn muốn chạy bao nhiêu vòng kiểm tra (Epochs)?\n> ");
     io::stdout().flush().unwrap();
     let mut epoch_input = String::new();
     io::stdin().read_line(&mut epoch_input).unwrap();
     let num_epochs: usize = epoch_input.trim().parse().unwrap_or(1);
-
-    let batch_size = 4; // Số lượng thử thách trong 1 Epoch
+    let batch_size = 4;
     let mut rng = rand::thread_rng();
 
-    // --- BƯỚC 4: VÒNG LẶP EPOCH (PROVE & VERIFY) ---
-    println!("\n================ BÁO CÁO XÁC THỰC LƯU TRỮ (EPOCHS) ================");
     for epoch in 1..=num_epochs {
         println!("\n---------------- EPOCH {} ----------------", epoch);
         
-        // 1. Mạng lưới sinh tập thử thách ngẫu nhiên
         let mut challenges = vec![];
         while challenges.len() < batch_size {
             let idx = rng.gen_range(0..8) as usize;
             if !challenges.contains(&idx) { challenges.push(idx); }
         }
         challenges.sort();
-        println!("[Network]  Sinh tập thử thách (J_ipt) gồm {} shard: {:?}", batch_size, challenges);
+        println!("[Network]  Yêu cầu xác minh Merkle Path cho {} shard: {:?}", batch_size, challenges);
 
-        // 2. Provider tạo bằng chứng NÉN BẰNG FOLDING
-        println!("[Provider] Bắt đầu quá trình Folding Scheme (Gấp {} shards vào 1 Bằng chứng)...", batch_size);
-        
         let start_prove = Instant::now();
-        
-        // Trạng thái ban đầu Z0
-        let z0_primary = vec![sector.commitment_root];
+        let z0_primary = vec![Fr::ZERO];
         let z0_secondary = vec![<VestaEngine as Engine>::Scalar::ZERO];
         
-        // Khởi tạo SNARK đệ quy MỚI cho Epoch này
-        let mut recursive_snark = RecursiveSNARK::new(
-            &pp,
-            &circuit_primary,
-            &circuit_secondary,
-            &z0_primary,
-            &z0_secondary,
-        ).expect("Lỗi khởi tạo Recursive SNARK");
+        let mut recursive_snark = RecursiveSNARK::new(&pp, &circuit_primary, &circuit_secondary, &z0_primary, &z0_secondary).unwrap();
 
-        // FOLDING LOOP: Gấp từng shard một
         for (step, &idx) in challenges.iter().enumerate() {
-            let step_circuit = PoStStepCircuit {
-                challenge_index: Fr::from(idx as u64),
-                shard_hash: sector.get_shard_hash(idx),
-                expected_root: sector.commitment_root,
-            };
+            let (leaf, path_elements, path_indices) = sector.get_proof(idx);
+            let step_circuit = PoStStepCircuit { leaf, path_elements, path_indices, expected_root: sector.commitment_root };
 
             recursive_snark.prove_step(&pp, &step_circuit, &circuit_secondary).unwrap();
-            println!("   > Fold #{} thành công (Shard {})", step + 1, idx);
+            println!("   > Fold #{} thành công (Đã xác thực Merkle Path cho Shard {})", step + 1, idx);
         }
         
-        let prove_time = start_prove.elapsed();
-        let proof_size = std::mem::size_of_val(&recursive_snark);
+        println!("   [✓] TẠO BẰNG CHỨNG TỔNG HỢP HOÀN TẤT ({:?})", start_prove.elapsed());
 
-        println!("   [✓] BẰNG CHỨNG TỔNG HỢP ĐÃ HOÀN TẤT");
-        println!("   - Tổng thời gian Prove : {:?}", prove_time);
-        println!("   - Kích thước Proof     : ~{} Bytes (O(1) Succinctness)", proof_size);
-        println!("   - Tổng Constraints     : Giữ nguyên ở mức ~260 (Đỉnh cao của Folding!)");
-
-        // 3. Mạng lưới xác minh
         print!("[Network]  Xác minh bằng chứng toán học (Verify)...");
         io::stdout().flush().unwrap();
         let start_verify = Instant::now();
-        
-        // Verify kiểm tra xem sau `batch_size` bước fold, bằng chứng có hợp lệ không
-        let verify_res = recursive_snark.verify(&pp, batch_size, &z0_primary, &z0_secondary);
-        
-        match verify_res {
+        match recursive_snark.verify(&pp, batch_size, &z0_primary, &z0_secondary) {
             Ok(_) => println!(" ✅ HỢP LỆ ({:?})", start_verify.elapsed()),
             Err(e) => println!(" ❌ KHÔNG HỢP LỆ: {:?}", e),
         }
     }
-    println!("\n======================================================================\n");
 }
