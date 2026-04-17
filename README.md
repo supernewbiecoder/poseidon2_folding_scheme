@@ -27,7 +27,7 @@ Sau đây là mô tả giả lập trong bài báo phần 3.4.
 3. Tạo bí mật (chỉ p biết)
     - $w_{i,p,t} := \{(s_{i,j}, \text{path}_{i,j}) : j \in J_{i,p,t}\}$
    - $s_{i,j}$: Nội dung thực sự của mảnh dữ liệu đó.
-   - $\text{path}_{i,j}$: Đường dẫn xác thực Merkle Path (chứng minh mảnh $s_{i,j}$ này thực sự thuộc về gốc $c^{stor}_i$ trong đề bài).
+   - $\text{path}_{i,j}$: Đường dẫn xác thực Merkle Path (chứng minh mảnh $s_{i,j}$ này thực sự thuộc về gốc $c^{stor}_{i}$ trong đề bài).
    > ứng với mỗi shard mà p phải chứng minh trong một challange, p sẽ phải tạo ra witness tương ứng. **Rồi nối với nhau tạo thành một tập các witness cho một challange**
 4. **Hệ thống sinh ra mạch R1CS ứng với một tập các witness đó**, sau đó từ đấy sẽ sinh ra bằng chứng ZK-proof để chứng minh. Nếu như bằng chứng là hợp lệ thì kết quả sẽ là hợp lệ, còn nếu không thì sẽ in ra thất bại.
 
