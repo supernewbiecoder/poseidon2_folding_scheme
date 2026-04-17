@@ -78,7 +78,17 @@ Mô phỏng này được thiết kế dựa trên các tham số có chủ đí
 ### 4. Thuật toán Folding (Nova: Pallas-Vesta Cycle)
 - **Thiết lập:** Sử dụng `nova-snark` để "gấp" 4 bước kiểm tra Merkle Path lại với nhau.
 - **Lý do:** Nếu dùng cách gộp mạch (Batching) truyền thống, số lượng constraints sẽ là `k * ~260 = ~1,040`. Nếu `k = 1000`, mạch sẽ tràn RAM. Nova Folding Scheme cho phép **kích thước mạch giữ nguyên ở mức ~260 Constraints**, không phụ thuộc vào số lượng thử thách `k`.
+--- 
+## Chi tiết tham số poseidon2 (tham khảo):
+### Cấu hình Tham số Poseidon2 (Pasta Curves)
 
+| Tham số | Giá trị | Ý nghĩa kỹ thuật |
+| :--- | :--- | :--- |
+| **Đường cong (Curve)** | **Pasta Curves** | Sử dụng trường vô hướng của Pallas, thực hiện các phép toán băm trên trường số nguyên tố $p \approx 2^{254}$. |
+| **Chiều rộng (Width - $T$)** | **3** | Mạch nhận 3 phần tử (thường là 2 phần tử dữ liệu + 1 phần tử đệm/capacity) để băm ra 1 kết quả. |
+| **S-box ($\alpha$)** | **5** | Hàm phi tuyến tính $x^5 \pmod p$. |
+| **Vòng toàn phần ($R_F$)** | **8** | Gồm 8 vòng lặp (4 đầu, 4 cuối) mà S-box được áp dụng cho toàn bộ trạng thái (3 phần tử). |
+| **Vòng bán phần ($R_P$)** | **56** | 56 vòng lặp ở giữa, trong đó S-box chỉ áp dụng cho 1 phần tử duy nhất để tối ưu hiệu năng. |
 ---
 
 ## 🖥️ Kết quả Dự kiến (Expected Output)
