@@ -123,3 +123,18 @@ Khi chạy thành công, giao diện CLI sẽ hiển thị tiến trình mạch 
 ---------------- EPOCH 2 ----------------
 ...
 ```
+## Rút ra từ lần mô phỏng theo hướng đề xuất và so sánh nó với mô phỏng trong phần 3.4 của report
+1. Không gian mạch là hằng số:
+ - ở lần mô phỏng trong 3.4, không gian mạch (số lượng constraint) trong mô phỏng 3.4 tăng tuyến tính theo số batch (trong simulation thì em chọn số batch mặc định là 4) thì trong lần mô phỏng này, không gian mạch (hay số lượng constraint) nằm ở mức hằng số $C_{constraint} \approx 260$. Việc sử dụng poseidon2 khiến cho không gian mạch thu gọn hơn 1 chút so với poseidon1.***Tuy nhiên điểm nổi bật hơn cả trong việc so sánh hiệu suất của việc sử dụng poseidon2 so với posedon1 đó là thời gian tạo cam kết ngắn hơn nhiều so với sử dụng poseidon1 (đây mới là ưu điểm chính của poseidon2 so với poseidon1)*** Nguyên nhân là do ma trận được chọn trong bước linear mixing của poseidon2 được lựa chọn một cách tối ưu và khéo léo hơn nên giảm được độ phức tạp của phép nhân ma trận.
+2. Chứng minh gia tăng: Đối với phương pháp mô phỏng 3.4, p (prover) sẽ gom hết bằng chứng lại, sau đó tạo liền một bằng chứng khổng lồ, điều này sẽ tạo ra lượng ràng buộc vô cùng lớn. Thì ở phương pháp này mỗi khi lấy được 1 shard, nó "gấp" ngay vào trạng thái trước đó. Điều này giúp hệ thống không bị nghẽn cổ chai (bottleneck) ở khâu tính toán. ***Dẫn tới tổng thời gian prove nhỏ hơn rất nhiều so với phương pháp mô phỏng ở 3.4***. Và nếu như sau này thiết kế có cần yêu cầu chứng minh nhiều hơn 4 shards cùng 1 lúc thì tổng thời gian chứng minh cũng không thay đổi quá nhiều do phép gập bằng chứng chỉ là phép cộng tuyến tính (độ phức tạp O(N)) 
+3. Duy trì tính Succinct (Ngắn gọn): Bất chấp việc dùng vòng lặp đệ quy, kích thước của Proof nén cuối cùng vẫn chỉ loanh quanh ở mức 800 - 900 Bytes, cực kỳ lý tưởng để gửi qua mạng lưới P2P hoặc lưu trữ On-chain.
+
+### So sánh Hiệu năng: Batching vs. Folding Scheme
+
+| Tiêu chí | Lần 1: Batching (JS/Circom) | Lần 2: Folding Scheme (Rust/Nova) | Điểm Tối Ưu / Cải Tiến |
+| :--- | :--- | :--- | :--- |
+| **Động cơ Băm (Hash)** | Poseidon v1 | Poseidon2 | Poseidon2 tối ưu ma trận nội bộ, giảm ràng buộc cơ sở từ ~300 xuống ~240 constraints/bước. |
+| **Xử lý Thử thách ($k$)** | Xây 1 mạch khổng lồ kiểm tra cùng lúc $k$ shard. | Dùng 1 mạch nhỏ, lặp lại $k$ lần và "gấp" (fold) kết quả. | Thay vì nhồi nhét, chia để trị giúp giải phóng bộ nhớ hệ thống. |
+| **Số lượng Constraints** | Tăng tuyến tính: $\approx k \times 900$ (Với $k=4 \rightarrow$ **3,648**) | Luôn cố định: Bằng đúng 1 bước kiểm tra $\rightarrow$ **~260** | Giảm hơn **14 lần** số lượng ràng buộc phần cứng ngay ở mốc $k=4$. |
+| **Tiêu thụ RAM (Prover)** | Cực lớn. Nếu $k=1000$, mạch có thể ngốn hàng chục GB RAM. | Rất nhỏ. Chạy mượt mà trên laptop thông thường dù $k$ lớn. | Prover không cần máy chủ đắt tiền (Phù hợp lý tưởng phi tập trung). |
+| **Khả năng mở rộng** | Bị giới hạn bởi giới hạn phần cứng của Provider. | Gần như vô hạn (Infinite Scalability). | Hệ thống có thể kiểm tra dữ liệu quy mô Enterprise/Exabyte. |
