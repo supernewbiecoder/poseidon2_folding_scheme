@@ -109,5 +109,5 @@ $P_{cheat} = \frac{\binom{n-m}{k}}{\binom{n}{k}}$
 - Ví dụ trong demo ($n=8, k=4$): Nếu Provider xóa 1 mảnh ($m=1$), xác suất để mạng lưới chọn trúng mảnh đó là $50\%$. Nếu chạy 5 Epochs, xác suất gian lận thành công chỉ còn $(0.5)^5 \approx 3\%$. Đây là lý do tại sao hệ thống cần chạy định kỳ (Recurring)
 
 ## Kết quả
-![kết quả 1](result_image\result_1.png)
-![kết quả tiếp](result_image\result_2.png)
+![kết quả 1](https://github.com/supernewbiecoder/poseidon2_folding_scheme/blob/3.4_simulation/result_image/result_1.png)
+![kết quả tiếp](https://github.com/supernewbiecoder/poseidon2_folding_scheme/blob/3.4_simulation/result_image/result_2.png)
