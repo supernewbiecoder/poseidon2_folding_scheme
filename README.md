@@ -78,6 +78,9 @@ Mô phỏng này được thiết kế dựa trên các tham số có chủ đí
 ### 4. Thuật toán Folding (Nova: Pallas-Vesta Cycle)
 - **Thiết lập:** Sử dụng `nova-snark` để "gấp" 4 bước kiểm tra Merkle Path lại với nhau.
 - **Lý do:** Nếu dùng cách gộp mạch (Batching) truyền thống, số lượng constraints sẽ là `k * ~260 = ~1,040`. Nếu `k = 1000`, mạch sẽ tràn RAM. Nova Folding Scheme cho phép **kích thước mạch giữ nguyên ở mức ~260 Constraints**, không phụ thuộc vào số lượng thử thách `k`.
+### 5. Nén bằng chứng Spartan và Groth16.
+- Folding scheme là quá trình gộp bằng chứng, số lượng mạch sinh ra không hề thay đổi do bằng chứng được gộp tuyến tính vào với nhau. Tuy nhiên việc gửi bắng chứng được gộp chứ chưa được nén cũng rất lớn, có thể lên tới hàng MB và bằng chứng sau khi được gộp thì tỉ lệ thuận với kích thước dữ liệu. Cho nên ta cần phải nén bằng chứng dựa vào thuật toán Spartan, sau đó bọc bằng chứng đấy bằng Groth16.
+- Nguyên nhân là Nova (Folding) chạy trên một cặp đường cong đặc biệt là Pallas & Vesta. Đặc điểm của cặp này là chúng sinh ra để "gấp" dữ liệu siêu nhanh, nhưng chúng KHÔNG hỗ trợ phép toán Ghép cặp (Pairing). Trong khi Groth16 thì ngược lại. Để tạo ra được cái bằng chứng ma thuật 256 bytes, thuật toán Groth16 bắt buộc phải có phép toán Pairing. Do đó, nó chỉ chạy được trên các đường cong như BN254 hoặc BLS12-381. Hệ quả là ta không thể nhúng thuật toán Groth16 trực tiếp vào đầu ra của Nova được, vì chúng dùng 2 hệ thống toán học hoàn toàn khác nhau. Spartan thì lại khác, nó sử dụng thuật toán IPA (Inner Product Argument) không cần Pairing, nên nó có thể chạy trực tiếp trên đường cong Pallas của Nova một cách tự nhiên. [tham khảo tại đây](https://eprint.iacr.org/2021/370.pdf)
 --- 
 ## Chi tiết tham số poseidon2 (tham khảo):
 ### Cấu hình Tham số Poseidon2 (Pasta Curves)
@@ -97,47 +100,84 @@ Khi chạy thành công, giao diện CLI sẽ hiển thị tiến trình mạch 
 
 ```text
 ======================================================================
-      MÔ PHỎNG GIAO THỨC ENGRAM (POSEIDON2 + NOVA FOLDING)
+  MÔ PHỎNG GIAO THỨC ENGRAM (POSEIDON2 + NOVA + MERKLE PROOF)
 ======================================================================
 
-[Hệ thống] Nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau bằng dấu phẩy, tối đa 8 mục):
-> shardA, shardB, shardC
+[Hệ thống] Nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau dấu phẩy, tối đa 8):
+wgnwoignowngownroigw,wgnworngwognw,qigniwrng,wigniwrngwr
 
-[Provider] Đang băm dữ liệu và dựng cây Merkle...
+[Provider] Đang băm dữ liệu bằng Native Poseidon2 và dựng cây Merkle...
 
 [ BÁO CÁO CAM KẾT - PHASE 1 ]
-- Số lượng phân mảnh     : 8 shards (Padding lên 8)
-- Mã cam kết (c_stor_i)  : Fr(0x1a2b3c...)
-- Kích thước mạch ZK     : ~260 Constraints (Cố định nhờ Folding!)
+- Mã cam kết (Root) : 0x2c9ddd3dd538ab0e7b78d679e4491fc72f89084cdad1e2a6c7837f7d2273726e
+- Kích thước mạch   : 2528 Constraints (Chính xác)
 
-[Network] Đang thiết lập Nova Public Params (Lần đầu tiên sẽ tốn vài giây)... ✅ Xong (1.23s)
+[Network] Đang thiết lập Nova Public Params... ✅ Xong
+[Network] Đang tạo Prover/Verifier Key cho Spartan Compression... ✅ Xong
 
 [Hệ thống] Bạn muốn chạy bao nhiêu vòng kiểm tra (Epochs)?
-> 2
-
-================ BÁO CÁO XÁC THỰC LƯU TRỮ (EPOCHS) ================
+> 4
 
 ---------------- EPOCH 1 ----------------
-[Network]  Sinh tập thử thách (J_ipt) gồm 4 shard: [0, 2, 5, 7]
-[Provider] Bắt đầu quá trình Folding Scheme (Gấp 4 shards vào 1 Bằng chứng)...
-   > Fold #1 thành công (Shard 0)
-   > Fold #2 thành công (Shard 2)
-   > Fold #3 thành công (Shard 5)
-   > Fold #4 thành công (Shard 7)
-   [✓] BẰNG CHỨNG TỔNG HỢP ĐÃ HOÀN TẤT
-   - Tổng thời gian Prove : 45.2ms
-   - Kích thước Proof     : ~840 Bytes (O(1) Succinctness)
-   - Tổng Constraints     : Giữ nguyên ở mức ~260 (Đỉnh cao của Folding!)
-[Network]  Xác minh bằng chứng toán học (Verify)... ✅ HỢP LỆ (2.1ms)
+[Network]  Yêu cầu xác minh Merkle Path cho 4 shard: [0, 2, 4, 5]
+   [Đang nén] Khởi chạy Spartan Compression... ✅ Xong
+   [Network] Xác minh bằng chứng Spartan... ✅ HỢP LỆ
+   [On-Chain] Mô phỏng bọc bằng Groth16 Cross-curve... ✅ Xong
+
+📊 BÁO CÁO HIỆU NĂNG THỰC TẾ (EPOCH 1):
+  1. Giai đoạn Nova Folding (Lưu nội bộ - Off-chain):
+     - Thời gian Proving       : 784.885624ms
+     - Dung lượng 'Vỏ' trên RAM: 840 bytes
+     - Dung lượng Serialize    : 1782920 bytes (~1741.13 KB)
+
+  2. Giai đoạn Spartan Compression (Truyền mạng P2P):
+     - Thời gian Nén (Prove)   : 12.670263819s
+     - Thời gian Xác minh      : 205.358659ms
+     - Dung lượng Nén Thực Tế  : 10072 bytes (~9.84 KB)
+
+  3. Giai đoạn Outer Wrapper (Ghi lên On-chain):
+     - Thời gian Bọc Groth16   : 150.253884ms (Mô phỏng)
+     - Kích thước gửi lên Chain: 256 bytes (Sẵn sàng gắn vào Bitcoin/EVM)
 
 ---------------- EPOCH 2 ----------------
+[Network]  Yêu cầu xác minh Merkle Path cho 4 shard: [1, 3, 5, 7]
+   [Đang nén] Khởi chạy Spartan Compression... ✅ Xong
+   [Network] Xác minh bằng chứng Spartan... ✅ HỢP LỆ
+   [On-Chain] Mô phỏng bọc bằng Groth16 Cross-curve... ✅ Xong
+
+📊 BÁO CÁO HIỆU NĂNG THỰC TẾ (EPOCH 2):
+  1. Giai đoạn Nova Folding (Lưu nội bộ - Off-chain):
+     - Thời gian Proving       : 832.928028ms
+     - Dung lượng 'Vỏ' trên RAM: 840 bytes
+     - Dung lượng Serialize    : 1782920 bytes (~1741.13 KB)
+
+  2. Giai đoạn Spartan Compression (Truyền mạng P2P):
+     - Thời gian Nén (Prove)   : 12.849201103s
+     - Thời gian Xác minh      : 183.064712ms
+     - Dung lượng Nén Thực Tế  : 10072 bytes (~9.84 KB)
+
+  3. Giai đoạn Outer Wrapper (Ghi lên On-chain):
+     - Thời gian Bọc Groth16   : 150.176508ms (Mô phỏng)
+     - Kích thước gửi lên Chain: 256 bytes (Sẵn sàng gắn vào Bitcoin/EVM)
+
+---------------- EPOCH 3 ----------------
+[Network]  Yêu cầu xác minh Merkle Path cho 4 shard: [0, 1, 2, 5]
+   [Đang nén] Khởi chạy Spartan Compression... ✅ Xong
+   [Network] Xác minh bằng chứng Spartan... ✅ HỢP LỆ
+   [On-Chain] Mô phỏng bọc bằng Groth16 Cross-curve... ✅ Xong
+
+📊 BÁO CÁO HIỆU NĂNG THỰC TẾ (EPOCH 3):
+
+  3. Giai đoạn Outer Wrapper (Ghi lên On-chain):
+     - Thời gian Bọc Groth16   : 150.197873ms (Mô phỏng)
+     - Kích thước gửi lên Chain: 256 bytes (Sẵn sàng gắn vào Bitcoin/EVM)
 ...
 ```
 ## Rút ra từ lần mô phỏng theo hướng đề xuất và so sánh nó với mô phỏng trong phần 3.4 của report
 1. Không gian mạch là hằng số:
  - ở lần mô phỏng trong 3.4, không gian mạch (số lượng constraint) trong mô phỏng 3.4 tăng tuyến tính theo số batch (trong simulation thì em chọn số batch mặc định là 4) thì trong lần mô phỏng này, không gian mạch (hay số lượng constraint) nằm ở mức hằng số $C_{constraint} \approx 260$. Việc sử dụng poseidon2 khiến cho không gian mạch thu gọn hơn 1 chút so với poseidon1.***Tuy nhiên điểm nổi bật hơn cả trong việc so sánh hiệu suất của việc sử dụng poseidon2 so với posedon1 đó là thời gian tạo cam kết ngắn hơn nhiều so với sử dụng poseidon1 (đây mới là ưu điểm chính của poseidon2 so với poseidon1)*** Nguyên nhân là do ma trận được chọn trong bước linear mixing của poseidon2 được lựa chọn một cách tối ưu và khéo léo hơn nên giảm được độ phức tạp của phép nhân ma trận.
 2. Chứng minh gia tăng: Đối với phương pháp mô phỏng 3.4, p (prover) sẽ gom hết bằng chứng lại, sau đó tạo liền một bằng chứng khổng lồ, điều này sẽ tạo ra lượng ràng buộc vô cùng lớn. Thì ở phương pháp này mỗi khi lấy được 1 shard, nó "gấp" ngay vào trạng thái trước đó. Điều này giúp hệ thống không bị nghẽn cổ chai (bottleneck) ở khâu tính toán. ***Dẫn tới tổng thời gian prove nhỏ hơn rất nhiều so với phương pháp mô phỏng ở 3.4***. Và nếu như sau này thiết kế có cần yêu cầu chứng minh nhiều hơn 4 shards cùng 1 lúc thì tổng thời gian chứng minh cũng không thay đổi quá nhiều do phép gập bằng chứng chỉ là phép cộng tuyến tính (độ phức tạp O(N)) 
-3. Duy trì tính Succinct (Ngắn gọn): Bất chấp việc dùng vòng lặp đệ quy, kích thước của Proof nén cuối cùng vẫn chỉ loanh quanh ở mức 800 - 900 Bytes, cực kỳ lý tưởng để gửi qua mạng lưới P2P hoặc lưu trữ On-chain.
+3. Duy trì tính Succinct (Ngắn gọn): Bất chấp việc dùng vòng lặp đệ quy, kích thước của Proof nén cuối cùng vẫn chỉ loanh quanh ở mức 300 Bytes, cực kỳ lý tưởng để gửi qua mạng lưới P2P hoặc lưu trữ On-chain.
 
 ### So sánh Hiệu năng: Batching vs. Folding Scheme
 
