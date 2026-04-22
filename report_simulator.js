@@ -12,22 +12,18 @@ class PoseidonMerkleTree {
     constructor(leavesStr, poseidon, depth = 3) {
         this.poseidon = poseidon;
         this.F = poseidon.F;
-        const maxLeaves = 2 ** depth; // Cây sâu 3 -> 8 lá
+        const maxLeaves = 2 ** depth;
 
-        // Chuyển chuỗi thành các phần tử của Trường hữu hạn (Field Elements)
         this.leaves = leavesStr.map(str => {
             let hex = Buffer.from(str.trim(), 'utf8').toString('hex');
-            return this.F.e(BigInt('0x' + hex)); // Sửa lỗi ép kiểu tại đây
+            return this.F.e(BigInt('0x' + hex)); 
         });
 
-        // Đệm thêm 0 cho đủ 8 phân mảnh (để mạch ZKP cố định kích thước)
         while (this.leaves.length < maxLeaves) {
             this.leaves.push(this.F.e(0));
         }
 
         this.tree = this.buildTree(this.leaves);
-        
-        // F.toObject() giúp chuyển an toàn từ Uint8Array sang BigInt
         this.root = this.F.toObject(this.tree[this.tree.length - 1][0]).toString();
     }
 
@@ -69,7 +65,7 @@ class PoseidonMerkleTree {
 }
 
 // ==========================================
-// LỚP 2: ĐỐI TƯỢNG NHÀ CUNG CẤP LƯU TRỮ
+// LỚP 2: ĐỐI TƯỢNG NHÀ CUNG CẤP LƯU TRỮ (BACKEND NODE)
 // ==========================================
 class StorageProvider {
     constructor(providerId) {
@@ -83,18 +79,15 @@ class StorageProvider {
         this.dataShards = rawShardsStr.split(',').slice(0, 8); 
         this.merkleTree = new PoseidonMerkleTree(this.dataShards, poseidon, 3);
         
-        // Tính tổng dung lượng byte thực tế của mảng đầu vào
         const dataSize = Buffer.byteLength(this.dataShards.join(''), 'utf8');
         return { root: this.merkleTree.root, dataSize };
     }
 
-    // Tạo bằng chứng tổng hợp (Aggregation Proof) cho TẬP thử thách
     async generateBatchProof(challengeIndices, committedRoot) {
         const leaves = [];
         const pathElements = [];
         const pathIndices = [];
 
-        // Gom toàn bộ witness của tập thử thách vào 1 mảng lớn
         challengeIndices.forEach(idx => {
             const p = this.merkleTree.getProof(idx);
             leaves.push(p.leaf);
@@ -112,19 +105,25 @@ class StorageProvider {
         );
         const endProve = performance.now();
 
-        const proofSize = Buffer.byteLength(JSON.stringify(proof));
+        // 1. Kích thước API (JSON String) dùng cho Web Backend -> Frontend
+        const jsonProofSize = Buffer.byteLength(JSON.stringify(proof));
+        
+        // 2. Kích thước On-chain (Raw Bytes) dùng cho Smart Contract
+        // Groth16 luôn có định dạng cố định: 2 điểm G1 (64*2) + 1 điểm G2 (128) = 256 bytes
+        const onChainProofSize = 256; 
 
         return {
             proof,
             publicSignals,
             timeMs: (endProve - startProve).toFixed(2),
-            proofSize
+            jsonProofSize,
+            onChainProofSize
         };
     }
 }
 
 // ==========================================
-// LỚP 3: GIAO THỨC MẠNG LƯỚI (NETWORK)
+// LỚP 3: GIAO THỨC MẠNG LƯỚI / SMART CONTRACT
 // ==========================================
 class ProtocolNetwork {
     constructor() {
@@ -136,7 +135,6 @@ class ProtocolNetwork {
         this.committedRoot = root;
     }
 
-    // Sinh ra tập hợp thử thách ngẫu nhiên (Mảng 4 index)
     generateBatchChallenge(epochSeed, totalLeaves = 8, batchSize = 4) {
         const indices = new Set();
         let counter = 0;
@@ -163,27 +161,25 @@ class ProtocolNetwork {
 }
 
 // ==========================================
-// LỚP 4: CLI INTERFACE MÔ PHỎNG THỰC TẾ
+// LỚP 4: KỊCH BẢN CHẠY THỬ NGHIỆM TÍCH HỢP
 // ==========================================
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const prompt = (query) => new Promise(resolve => rl.question(query, resolve));
 
 async function main() {
     console.log("\n======================================================================");
-    console.log("          MÔ PHỎNG GIAO THỨC ENGRAM - STORAGE ACCOUNTABILITY");
+    console.log("          MÔ PHỎNG GIAO THỨC ENGRAM - BẰNG CHỨNG LƯU TRỮ");
     console.log("======================================================================\n");
 
     const provider = new StorageProvider("Node_CTDL_Huy");
     const network = new ProtocolNetwork();
 
-    // 1. NGƯỜI DÙNG NHẬP DỮ LIỆU
     const inputData = await prompt("[Hệ thống] Nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau bằng dấu phẩy, tối đa 8 mục):\n> ");
     
-    process.stdout.write("\n[Provider] Đang chạy Erasure Coding và băm cây Merkle Poseidon...\n");
+    process.stdout.write("\n[Provider] Đang chạy mã hóa và băm cây Merkle Poseidon...\n");
     const { root, dataSize } = await provider.initData(inputData);
     network.receiveCommitment(root);
     
-    // R1CS Constraints cho Mạch Batch 4, Merkle Depth 3 bằng Poseidon
     const estimatedConstraints = "3,648"; 
 
     console.log(`\n[ BÁO CÁO CAM KẾT - PHASE 1 ]`);
@@ -192,31 +188,27 @@ async function main() {
     console.log(`- Mã cam kết (c_stor_i)       : ${root.substring(0, 40)}...`);
     console.log(`- Độ phức tạp mạch (Circuit)  : ${estimatedConstraints} (R1CS Constraints)`);
 
-    // 2. THIẾT LẬP SỐ CHU KỲ
     const epochsStr = await prompt("\n[Hệ thống] Bạn muốn chạy bao nhiêu vòng kiểm tra (Epochs)?\n> ");
     const epochs = parseInt(epochsStr) || 1;
-    const batchSize = 4; // Cố định theo file circom của chúng ta
+    const batchSize = 4; 
 
-    // 3. CHẠY VÒNG LẶP EPOCH
     console.log("\n================ BÁO CÁO XÁC THỰC LƯU TRỮ (EPOCHS) ================");
     for (let t = 1; t <= epochs; t++) {
         console.log(`\n---------------- EPOCH ${t} ----------------`);
         
-        // Mạng lưới sinh seed và tập thử thách
         const epochSeed = `seed_epoch_${t}_time_${Date.now()}`;
         const challengeSet = network.generateBatchChallenge(epochSeed, 8, batchSize);
-        console.log(`[Network]  Sinh tập thử thách (J_ipt) gồm ${batchSize} shard: [${challengeSet.join(', ')}]`);
+        console.log(`[Network]  Sinh tập thử thách gồm ${batchSize} shard: [${challengeSet.join(', ')}]`);
 
-        // Provider tạo bằng chứng NÉN TỔNG HỢP
         process.stdout.write(`[Provider] Đang tính toán Bằng chứng SNARK tổng hợp (Prove)...\n`);
-        const { proof, publicSignals, timeMs: proveTime, proofSize } = await provider.generateBatchProof(challengeSet, root);
+        const { proof, publicSignals, timeMs: proveTime, jsonProofSize, onChainProofSize } = await provider.generateBatchProof(challengeSet, root);
         
-        console.log(`   > Trạng thái      : Đã gom ${batchSize} Merkle Paths thành 1 Bằng chứng duy nhất.`);
+        console.log(`   > Trạng thái      : Đã gom ${batchSize} Merkle Paths thành 1 Bằng chứng.`);
         console.log(`   > Thời gian Prove : ${proveTime} ms`);
-        console.log(`   > Kích thước Proof: ${proofSize} Bytes (O(1) Succinctness)`);
+        console.log(`   > Kích thước API  : ${jsonProofSize} Bytes (JSON String)`);
+        console.log(`   > Kích thước Chain: ${onChainProofSize} Bytes (Raw EVM Calldata)`);
 
-        // Mạng lưới xác minh
-        process.stdout.write(`[Network]  Xác minh bằng chứng toán học (Verify)...\n`);
+        process.stdout.write(`[Network]  Xác minh bằng chứng (Smart Contract Verify)...\n`);
         const { isValid, timeMs: verifyTime } = await network.verifyBatchProof(proof, publicSignals);
 
         if (isValid) {
