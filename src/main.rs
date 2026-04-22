@@ -1,17 +1,49 @@
 use bellpepper_core::{num::AllocatedNum, ConstraintSystem, SynthesisError, LinearCombination};
+use bellpepper_core::test_cs::TestConstraintSystem;
 use nova_snark::{
     traits::{circuit::{StepCircuit, TrivialCircuit}, Engine}, 
-    provider::{PallasEngine, VestaEngine}, 
-    RecursiveSNARK, PublicParams,
+    provider::{PallasEngine, VestaEngine, ipa_pc::EvaluationEngine}, 
+    spartan::snark::RelaxedR1CSSNARK,
+    RecursiveSNARK, CompressedSNARK, PublicParams,
 };
 use pasta_curves::pallas::Scalar as Fr;
 use ff::{Field, PrimeField}; 
 use rand::Rng;
 use std::time::Instant;
 use std::io::{self, Write};
+use std::thread;
+use std::time::Duration;
+use bincode;
 
 mod constants;
 use constants::{MAT_FULL, MAT_PARTIAL, RC, R_F, R_P, T};
+
+// ==========================================
+// MÔ PHỎNG LỚP OUTER WRAPPER (GROTH16 / ON-CHAIN)
+// ==========================================
+pub mod groth16_wrapper {
+    #[derive(Clone, Debug)]
+    pub struct Groth16Proof {
+        pub pi_a: [u8; 64],  // Điểm G1
+        pub pi_b: [u8; 128], // Điểm G2
+        pub pi_c: [u8; 64],  // Điểm G1
+    }
+
+    pub struct Groth16Wrapper;
+
+    impl Groth16Wrapper {
+        pub fn mock_prove() -> Groth16Proof {
+            // Trong thực tế, quá trình này gọi mạch Circom/Halo2 để verify proof của Nova
+            // và sinh ra 3 điểm trên đường cong BN254.
+            Groth16Proof {
+                pi_a: [1u8; 64],
+                pi_b: [2u8; 128],
+                pi_c: [3u8; 64],
+            }
+        }
+    }
+}
+use groth16_wrapper::*;
 
 // ==========================================
 // 1. POSEIDON2 GADGET
@@ -143,8 +175,12 @@ pub fn native_poseidon2(left: Fr, right: Fr) -> Fr {
     state[0]
 }
 
+// ==========================================
+// 3. CẤU TRÚC DỮ LIỆU & MẠCH BẰNG CHỨNG
+// ==========================================
 #[derive(Clone, Debug)]
 pub struct DataSector {
+    pub raw_data: Vec<Fr>, 
     pub leaves: Vec<Fr>,
     pub tree: Vec<Vec<Fr>>,
     pub commitment_root: Fr,
@@ -152,16 +188,19 @@ pub struct DataSector {
 
 impl DataSector {
     pub fn new(raw_shards: Vec<&str>) -> Self {
-        let mut leaves: Vec<Fr> = raw_shards.iter().map(|s| {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(s.as_bytes());
+        let mut raw_data: Vec<Fr> = raw_shards.iter().map(|s| {
             let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(hasher.finalize().as_bytes());
-            bytes[31] &= 0x3F; // Chống tràn số
-            Option::from(Fr::from_repr(bytes)).unwrap()
+            let s_bytes = s.as_bytes();
+            let len = std::cmp::min(s_bytes.len(), 31);
+            bytes[..len].copy_from_slice(&s_bytes[..len]);
+            Option::from(Fr::from_repr(bytes)).expect("Lỗi chuyển đổi dữ liệu")
         }).collect();
         
-        while leaves.len() < 8 { leaves.push(Fr::ZERO); }
+        while raw_data.len() < 8 { raw_data.push(Fr::ZERO); }
+
+        let leaves: Vec<Fr> = raw_data.iter().map(|&data| {
+            native_poseidon2(data, Fr::ZERO)
+        }).collect();
 
         let mut tree = vec![leaves.clone()];
         let mut current_level = leaves.clone();
@@ -175,7 +214,7 @@ impl DataSector {
             current_level = next_level;
         }
 
-        Self { leaves, tree: tree.clone(), commitment_root: current_level[0] }
+        Self { raw_data, leaves, tree: tree.clone(), commitment_root: current_level[0] }
     }
 
     pub fn get_proof(&self, index: usize) -> (Fr, Vec<Fr>, Vec<Fr>) {
@@ -190,22 +229,20 @@ impl DataSector {
             path_indices.push(if is_right { Fr::ONE } else { Fr::ZERO }); 
             current_idx /= 2;
         }
-        (self.leaves[index], path_elements, path_indices)
+        (self.raw_data[index], path_elements, path_indices) 
     }
 }
 
-// ==========================================
-// 3. MẠCH ZK BƯỚC ĐƠN (PO ST)
-// ==========================================
 #[derive(Clone, Debug)]
 pub struct PoStStepCircuit {
-    pub leaf: Fr,
+    pub raw_data: Fr,          
+    pub challenge_index: Fr,   
     pub path_elements: Vec<Fr>,
     pub path_indices: Vec<Fr>,
 }
 
 impl StepCircuit<Fr> for PoStStepCircuit {
-    fn arity(&self) -> usize { 2 } // [counter, root]
+    fn arity(&self) -> usize { 2 } 
 
     fn synthesize<CS: ConstraintSystem<Fr>>(
         &self, cs: &mut CS, z_in: &[AllocatedNum<Fr>],
@@ -222,7 +259,19 @@ impl StepCircuit<Fr> for PoStStepCircuit {
             |lc| lc + CS::one(), 
         );
 
-        let mut current_hash = AllocatedNum::alloc(cs.namespace(|| "leaf"), || Ok(self.leaf))?;
+        let raw_data_var = AllocatedNum::alloc(cs.namespace(|| "raw_data"), || Ok(self.raw_data))?;
+        let hash_leaf_inputs = vec![raw_data_var, zero_var.clone(), zero_var.clone()];
+        
+        let leaf_out = {
+            let mut ns_leaf = cs.namespace(|| "hash_leaf");
+            let mut hasher_leaf = Poseidon2Gadget::new(&mut ns_leaf, hash_leaf_inputs);
+            hasher_leaf.hash()?
+        };
+        let mut current_hash = leaf_out[0].clone();
+
+        let expected_index_var = AllocatedNum::alloc(cs.namespace(|| "expected_index"), || Ok(self.challenge_index))?;
+        let mut reconstructed_index_lc = LinearCombination::zero();
+        let mut multiplier = Fr::ONE;
 
         for i in 0..self.path_elements.len() {
             let sibling = AllocatedNum::alloc(cs.namespace(|| format!("sibling_{}", i)), || Ok(self.path_elements[i]))?;
@@ -234,6 +283,9 @@ impl StepCircuit<Fr> for PoStStepCircuit {
                 |lc| lc + index.get_variable(),
                 |lc| lc + index.get_variable(),
             );
+
+            reconstructed_index_lc = reconstructed_index_lc + (multiplier, index.get_variable());
+            multiplier = multiplier * Fr::from(2u64);
 
             let diff_val = current_hash.get_value().zip(sibling.get_value()).map(|(c, s)| c - s);
             let diff = AllocatedNum::alloc(cs.namespace(|| format!("diff_{}", i)), || diff_val.ok_or(SynthesisError::AssignmentMissing))?;
@@ -279,6 +331,13 @@ impl StepCircuit<Fr> for PoStStepCircuit {
         }
 
         cs.enforce(
+            || "enforce_challenge_index_match",
+            |lc| lc + &reconstructed_index_lc,
+            |lc| lc + CS::one(),
+            |lc| lc + expected_index_var.get_variable(),
+        );
+
+        cs.enforce(
             || "enforce_merkle_root",
             |lc| lc + current_hash.get_variable(),
             |lc| lc + CS::one(),
@@ -320,36 +379,73 @@ fn main() {
 
     print!("[Hệ thống] Nhập các dữ liệu phân mảnh cần lưu trữ (cách nhau dấu phẩy, tối đa 8):\n> ");
     io::stdout().flush().unwrap();
+    
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    let raw_shards: Vec<&str> = input.trim().split(',').filter(|s| !s.is_empty()).collect();
+    if let Err(_) = io::stdin().read_line(&mut input) {
+        println!("\n⚠️ Không thể đọc UTF-8 từ Terminal. Tự động dùng dữ liệu mặc định!");
+        input = String::from("ofengieoeng,ogennnnnnnnnnnnnnnn,owngfdoqnfoqienfiqe,qooegnoqeng,igowngon,oiengonq,oiqnegioqneg");
+    }
+    
+    let mut raw_shards: Vec<&str> = input.trim().split(',').filter(|s| !s.is_empty()).collect();
+    if raw_shards.is_empty() {
+        raw_shards = vec!["shard1", "shard2", "shard3", "shard4"];
+    }
 
     print!("\n[Provider] Đang băm dữ liệu bằng Native Poseidon2 và dựng cây Merkle...");
     io::stdout().flush().unwrap();
     let sector = DataSector::new(raw_shards);
     
+    let dummy_sector = DataSector::new(vec!["dummy"]);
+    let (dummy_data, dummy_path, dummy_indices) = dummy_sector.get_proof(0);
+    let circuit_primary = PoStStepCircuit { 
+        raw_data: dummy_data, 
+        challenge_index: Fr::ZERO, 
+        path_elements: dummy_path.clone(), 
+        path_indices: dummy_indices.clone() 
+    };
+
+    let mut cs = TestConstraintSystem::<Fr>::new();
+    let z_in_test = vec![
+        AllocatedNum::alloc(cs.namespace(|| "z0"), || Ok(Fr::ZERO)).unwrap(),
+        AllocatedNum::alloc(cs.namespace(|| "z1"), || Ok(Fr::ZERO)).unwrap()
+    ];
+    circuit_primary.synthesize(&mut cs, &z_in_test).unwrap();
+    let num_constraints = cs.num_constraints();
+
     println!("\n\n[ BÁO CÁO CAM KẾT - PHASE 1 ]");
     println!("- Mã cam kết (Root) : {:?}", sector.commitment_root);
-    println!("- Kích thước mạch   : ~750 Constraints (Mạch đã bao gồm Merkle Inclusion!)"); 
+    println!("- Kích thước mạch   : {} Constraints (Chính xác)", num_constraints); 
 
     print!("\n[Network] Đang thiết lập Nova Public Params...");
     io::stdout().flush().unwrap();
     
-    let dummy_sector = DataSector::new(vec!["dummy"]);
-    let (dummy_leaf, dummy_path, dummy_indices) = dummy_sector.get_proof(0);
-    let circuit_primary = PoStStepCircuit { leaf: dummy_leaf, path_elements: dummy_path, path_indices: dummy_indices };
-    let circuit_secondary = TrivialCircuit::<<VestaEngine as Engine>::Scalar>::default(); 
-    
-    let pp = PublicParams::<PallasEngine, VestaEngine, PoStStepCircuit, TrivialCircuit<<VestaEngine as Engine>::Scalar>>::setup(
+    type C1 = PoStStepCircuit;
+    type C2 = TrivialCircuit<<VestaEngine as Engine>::Scalar>;
+    type EE1 = EvaluationEngine<PallasEngine>;
+    type EE2 = EvaluationEngine<VestaEngine>;
+    type S1 = RelaxedR1CSSNARK<PallasEngine, EE1>;
+    type S2 = RelaxedR1CSSNARK<VestaEngine, EE2>;
+
+    let circuit_secondary = C2::default(); 
+    let pp = PublicParams::<PallasEngine, VestaEngine, C1, C2>::setup(
         &circuit_primary, &circuit_secondary, &*nova_snark::traits::snark::default_ck_hint(), &*nova_snark::traits::snark::default_ck_hint()
     );
     println!(" ✅ Xong");
 
+    print!("[Network] Đang tạo Prover/Verifier Key cho Spartan Compression...");
+    io::stdout().flush().unwrap();
+    let (pk, vk) = CompressedSNARK::<PallasEngine, VestaEngine, C1, C2, S1, S2>::setup(&pp).unwrap();
+    println!(" ✅ Xong");
+
     print!("\n[Hệ thống] Bạn muốn chạy bao nhiêu vòng kiểm tra (Epochs)?\n> ");
     io::stdout().flush().unwrap();
+    
     let mut epoch_input = String::new();
-    io::stdin().read_line(&mut epoch_input).unwrap();
-    let num_epochs: usize = epoch_input.trim().parse().unwrap_or(1);
+    let num_epochs: usize = match io::stdin().read_line(&mut epoch_input) {
+        Ok(_) => epoch_input.trim().parse().unwrap_or(1),
+        Err(_) => 1
+    };
+
     let batch_size = 4;
     let mut rng = rand::thread_rng();
 
@@ -364,32 +460,99 @@ fn main() {
         challenges.sort();
         println!("[Network]  Yêu cầu xác minh Merkle Path cho {} shard: {:?}", batch_size, challenges);
 
-        let start_prove = Instant::now();
         let z0_primary = vec![Fr::ZERO, sector.commitment_root]; 
         let z0_secondary = vec![<VestaEngine as Engine>::Scalar::ZERO];
         
-        // ⚡ BẢN VÁ LỖI NẰM Ở ĐÂY: Sử dụng Mạch thật của thử thách đầu tiên để khởi tạo Base Instance
-        let (leaf_base, path_base, indices_base) = sector.get_proof(challenges[0]);
-        let base_circuit = PoStStepCircuit { leaf: leaf_base, path_elements: path_base, path_indices: indices_base };
+        let challenge_index_base_fr = Fr::from(challenges[0] as u64);
+        let (raw_data_base, path_base, indices_base) = sector.get_proof(challenges[0]);
+        let base_circuit = PoStStepCircuit { 
+            raw_data: raw_data_base, 
+            challenge_index: challenge_index_base_fr,
+            path_elements: path_base, 
+            path_indices: indices_base 
+        };
 
+        // ==========================================
+        // GIAI ĐOẠN 1: NOVA FOLDING (IVC)
+        // ==========================================
+        let start_prove_ivc = Instant::now();
         let mut recursive_snark = RecursiveSNARK::new(&pp, &base_circuit, &circuit_secondary, &z0_primary, &z0_secondary).unwrap();
 
         for (step, &idx) in challenges.iter().enumerate() {
-            let (leaf, path_elements, path_indices) = sector.get_proof(idx);
-            let step_circuit = PoStStepCircuit { leaf, path_elements, path_indices };
+            let challenge_index_fr = Fr::from(idx as u64); 
+            let (raw_data, path_elements, path_indices) = sector.get_proof(idx);
+            
+            let step_circuit = PoStStepCircuit { 
+                raw_data, 
+                challenge_index: challenge_index_fr, 
+                path_elements, 
+                path_indices 
+            };
 
             recursive_snark.prove_step(&pp, &step_circuit, &circuit_secondary).unwrap();
-            println!("   > Fold #{} thành công (Đã xác thực Merkle Path cho Shard {})", step + 1, idx);
         }
+        let total_prove_ivc_time = start_prove_ivc.elapsed();
         
-        println!("   [✓] TẠO BẰNG CHỨNG TỔNG HỢP HOÀN TẤT ({:?})", start_prove.elapsed());
+        let ivc_ram_size = std::mem::size_of_val(&recursive_snark);
+        let serialized_ivc = bincode::serialize(&recursive_snark).expect("Lỗi Serialize IVC");
+        let ivc_serialize_size = serialized_ivc.len();
 
-        print!("[Network]  Xác minh bằng chứng toán học (Verify)...");
+        // ==========================================
+        // GIAI ĐOẠN 2: SPARTAN COMPRESSION (NÉN)
+        // ==========================================
+        print!("   [Đang nén] Khởi chạy Spartan Compression...");
+        io::stdout().flush().unwrap();
+        
+        let start_compress = Instant::now();
+        let compressed_snark = CompressedSNARK::<PallasEngine, VestaEngine, C1, C2, S1, S2>::prove(&pp, &pk, &recursive_snark).unwrap();
+        let total_compress_time = start_compress.elapsed();
+        println!(" ✅ Xong");
+
+        let serialized_compressed = bincode::serialize(&compressed_snark).expect("Lỗi Serialize Compressed");
+        let compressed_serialize_size = serialized_compressed.len();
+
+        print!("   [Network] Xác minh bằng chứng Spartan...");
         io::stdout().flush().unwrap();
         let start_verify = Instant::now();
-        match recursive_snark.verify(&pp, batch_size, &z0_primary, &z0_secondary) {
-            Ok(_) => println!(" ✅ HỢP LỆ ({:?})", start_verify.elapsed()),
+        let verify_result = compressed_snark.verify(&vk, batch_size, &z0_primary, &z0_secondary);
+        let total_verify_time = start_verify.elapsed();
+
+        match verify_result {
+            Ok(_) => println!(" ✅ HỢP LỆ"),
             Err(e) => println!(" ❌ KHÔNG HỢP LỆ: {:?}", e),
         }
+
+        // ==========================================
+        // GIAI ĐOẠN 3: ON-CHAIN SUBMISSION (MÔ PHỎNG GROTH16 WRAPPER)
+        // ==========================================
+        print!("   [On-Chain] Mô phỏng bọc bằng Groth16 Cross-curve...");
+        io::stdout().flush().unwrap();
+        let start_groth16 = Instant::now();
+        
+        // Mô phỏng độ trễ tạo siêu bằng chứng (Super-proof) của hệ thống thật
+        thread::sleep(Duration::from_millis(150)); 
+        let onchain_proof = Groth16Wrapper::mock_prove();
+        let total_groth16_time = start_groth16.elapsed();
+        
+        let onchain_size = onchain_proof.pi_a.len() + onchain_proof.pi_b.len() + onchain_proof.pi_c.len();
+        println!(" ✅ Xong");
+
+        // ==========================================
+        // BÁO CÁO HIỆU NĂNG TỔNG THỂ
+        // ==========================================
+        println!("\n📊 BÁO CÁO HIỆU NĂNG THỰC TẾ (EPOCH {}):", epoch);
+        println!("  1. Giai đoạn Nova Folding (Lưu nội bộ - Off-chain):");
+        println!("     - Thời gian Proving       : {:?}", total_prove_ivc_time);
+        println!("     - Dung lượng 'Vỏ' trên RAM: {} bytes", ivc_ram_size);
+        println!("     - Dung lượng Serialize    : {} bytes (~{:.2} KB)", ivc_serialize_size, ivc_serialize_size as f64 / 1024.0);
+        
+        println!("\n  2. Giai đoạn Spartan Compression (Truyền mạng P2P):");
+        println!("     - Thời gian Nén (Prove)   : {:?}", total_compress_time);
+        println!("     - Thời gian Xác minh      : {:?}", total_verify_time);
+        println!("     - Dung lượng Nén Thực Tế  : {} bytes (~{:.2} KB)", compressed_serialize_size, compressed_serialize_size as f64 / 1024.0);
+
+        println!("\n  3. Giai đoạn Outer Wrapper (Ghi lên On-chain):");
+        println!("     - Thời gian Bọc Groth16   : {:?} (Mô phỏng)", total_groth16_time);
+        println!("     - Kích thước gửi lên Chain: {} bytes (Sẵn sàng gắn vào Bitcoin/EVM)", onchain_size);
     }
 }
