@@ -1,3 +1,4 @@
 pandas
 tabulate
 matplotlib
+PyNaCl>=1.5.0
