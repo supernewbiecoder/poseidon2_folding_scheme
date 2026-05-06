@@ -11,11 +11,24 @@ circuits-circom/*.r1cs
 circuits-circom/*.wtns
 circuits-circom/*.zkey
 circuits-circom/*.ptau
+circuits-circom/compressed_proof.bin
+circuits-circom/input_wrapper.json
+circuits-circom/comparison_report.json
 circuits-circom/proof.json
 circuits-circom/public.json
 circuits-circom/input.json
 circuits-circom/verification_key.json
 circuits-circom/spartan_wrapper_js/spartan_wrapper.wasm
+
+# Wrapper / witness helper outputs
+circuits-circom/spartan_wrapper_js/*.wasm
+circuits-circom/spartan_wrapper_js/*.sym
+circuits-circom/spartan_wrapper_js/*.log
+circuits-circom/witness.wtns
+
+# Comparison / benchmark outputs
+lotus-bench*.log
+comparison_report.json
 
 # Node dependencies (if circomlib or other packages are installed locally)
 circuits-circom/node_modules/
