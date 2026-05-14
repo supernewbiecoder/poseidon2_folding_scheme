@@ -1,7 +1,8 @@
 # Python virtual environments
 venv/
 .venv/
-
+#npm environments
+node_modules/
 # Rust build outputs
 target/
 prover-rust/target/
