@@ -57,27 +57,33 @@ Trong đó:
 #### 1.2.1 Nguồn sinh thử thách (challange seed)
 **Yêu cầu**: Nguồn sinh thử thách phải là ngẫu nhiên để tránh prover gian lận.
 - **Sử dụng Bitcoin L1 làm Beacon**: Cứ mỗi đầu Epoch (ví dụ: mỗi 1 giờ), hệ thống sẽ lấy Mã băm của Block Bitcoin mới nhất (Block Hash) kết hợp với ID của Prover để làm Hạt giống ngẫu nhiên (Seed).
-- **Ánh xạ Shard**: Hạt giống này sẽ được đưa vào một Hàm giả ngẫu nhiên (PRNG). Đầu ra của hàm này sẽ chỉ định chính xác $N$ chỉ số ngẫu nhiên (Ví dụ: Shard số 15, Shard số 9.023, Shard số 45.112) mà Prover bắt buộc phải chứng minh trong Epoch này.
+- **Ánh xạ Shard**: Hạt giống này sẽ được đưa vào một Hàm giả ngẫu nhiên (PRNG). Đầu ra của hàm này sẽ chỉ định chính xác N chỉ số ngẫu nhiên (Ví dụ: Shard số 15, Shard số 9.023, Shard số 45.112) mà Prover bắt buộc phải chứng minh trong Epoch này.
+- **Ánh xạ Shard**: Hạt giống này sẽ được đưa vào một Hàm giả ngẫu nhiên (PRNG). Đầu ra của hàm này sẽ chỉ định chính xác N chỉ số ngẫu nhiên (Ví dụ: Shard số 15, Shard số 9.023, Shard số 45.112) mà Prover bắt buộc phải chứng minh trong Epoch này.
 #### 1.2.2 Cơ chế Lấy mẫu Xác suất (Probabilistic Sampling)
 **Yêu cầu**: Cơ chế sinh thử thách phải tránh việc kiểm tra toàn bộ prover để tiết kiệm chi phí tính toán nhưng cũng phải đảm bảo prover sẽ không thể gian lận.
 
-- Thay vì kiểm tra 100%, Thử thách chỉ yêu cầu Prover lấy ra một số lượng nhỏ (ví dụ $N = 100$ Shards) để kiểm tra.
-- Logic bảo mật: Nếu Prover lén xóa đi 10% dữ liệu để tiết kiệm ổ cứng, xác suất để Prover "vượt qua" bài kiểm tra ngẫu nhiên 100 Shards mà không trúng vào phần đã xóa là: $(1 - 0.1)^{100} \approx 0.0026\%$. 
+- Thay vì kiểm tra 100%, Thử thách chỉ yêu cầu Prover lấy ra một số lượng nhỏ (ví dụ N = 100 Shards) để kiểm tra.
+- Logic bảo mật: Nếu Prover lén xóa đi 10% dữ liệu để tiết kiệm ổ cứng, xác suất để Prover "vượt qua" bài kiểm tra ngẫu nhiên 100 Shards mà không trúng vào phần đã xóa là: (1 - 0.1)^100 ≈ 0.0026%. 
 Nghĩa là, chỉ cần Prover xóa một phần rất nhỏ dữ liệu, họ gần như chắc chắn 99.99% sẽ bị bắt quả tang và bị phạt (Slash).
 
 #### 1.2.3 Luồng Chứng minh Lưu trữ Liên tục (PoSt Flow)
-Khi nhận được Thử thách yêu cầu kiểm tra Shard thứ $i$, Prover sẽ thực hiện các bước sau (và đưa vào mạch ZK để gập):
+Khi nhận được Thử thách yêu cầu kiểm tra Shard thứ i, Prover sẽ thực hiện các bước sau (và đưa vào mạch ZK để gập):
 
-- **Truy xuất dữ liệu**: Prover truy xuất từ ổ cứng các mảnh dữ liệu cần thiết cho bước $i$ bao gồm: Dữ liệu gốc ($D_i$), mã băm của khối liền trước ($S_{i-1}$), lá Merkle hiện tại ($S_i$) và Đường dẫn Merkle (Merkle Path) của lá thứ $i$.
-- **Giải quyết Ràng buộc Mạch (Circuit Constraints)**: Tại mỗi bước gập (Fold), mạch $m_{aug}$ sẽ đánh giá đồng thời 2 điều kiện bắt buộc (Constraints) sau:
-    - **Ràng buộc Tri thức (Chứng minh tính toàn vẹn của $D_i$)**: Mạch kiểm tra tính hợp lệ của phương trình niêm phong:
-$\text{Poseidon2}(S_{i-1}, D_i, \text{Prover\_ID}) == S_i$ (với $i > 1$)
-hoặc $\text{Poseidon2}(IV, D_1, \text{Prover\_ID}) == S_1$ (với $i = 1$).
-(Điều này ép buộc Prover phải cung cấp đúng $D_i$ làm Private Input, chứng minh họ không xóa dữ liệu gốc).
-    - **Ràng buộc Vị trí (Chứng minh sự tồn tại của $S_i$)**: Mạch sử dụng $S_i$ kết hợp với Merkle Path để băm tuần tự lên trên. Kết quả cuối cùng phải khớp hoàn toàn với Master Merkle Root mà Prover đã cam kết (commit) trên chuỗi từ trước.
-- Tổng hợp Bằng chứng: Thay vì tạo ra $N$ bằng chứng rời rạc, quá trình tổng hợp được chia làm 2 giai đoạn để tối ưu hóa hiệu năng:
-    - **Giai đoạn Gập (Nova Folding)**: Prover sử dụng thuật toán Nova để gập (fold) liên tiếp $N$ bước kiểm tra trạng thái lại với nhau. Kết quả của quá trình này tạo ra một Trạng thái Gập cuối cùng (Final Folded Instance) duy nhất đại diện cho toàn bộ $N$ bước kiểm tra.
-    - **Giai đoạn Nén (Spartan Wrapper)**: Sau khi xác minh việc gập nội bộ thành công, Prover sử dụng thuật toán chứng minh ZK-SNARK (cụ thể là Spartan) làm lớp bọc ngoài (Wrapper). Spartan sẽ biên dịch Trạng thái Gập cuối cùng thành một bằng chứng siêu nén (chỉ vài chục KB) với thời gian kiểm chứng hằng số $O(1)$.
+- **Truy xuất dữ liệu**: Prover truy xuất từ ổ cứng các mảnh dữ liệu cần thiết cho bước i bao gồm: Dữ liệu gốc (D_i), mã băm của khối liền trước (S_{i-1}), lá Merkle hiện tại (S_i) và Đường dẫn Merkle (Merkle Path) của lá thứ i.
+- **Giải quyết Ràng buộc Mạch (Circuit Constraints)**: Tại mỗi bước gập (Fold), mạch m_aug sẽ đánh giá đồng thời 2 điều kiện bắt buộc (Constraints) sau:
+    - **Ràng buộc Tri thức (Chứng minh tính toàn vẹn của dữ liệu)**: Mạch kiểm tra tính hợp lệ của phương trình niêm phong:
+
+Poseidon2(S_{i-1}, D_i, Prover_ID) == S_i (với i > 1)
+
+hoặc 
+
+Poseidon2(IV, D_1, Prover_ID) == S_1 (với i = 1)
+
+(Điều này ép buộc Prover phải cung cấp đúng D_i làm Private Input, chứng minh họ không xóa dữ liệu gốc).
+    - **Ràng buộc Vị trí (Chứng minh sự tồn tại của S_i)**: Mạch sử dụng S_i kết hợp với Merkle Path để băm tuần tự lên trên. Kết quả cuối cùng phải khớp hoàn toàn với Master Merkle Root mà Prover đã cam kết (commit) trên chuỗi từ trước.
+- Tổng hợp Bằng chứng: Thay vì tạo ra N bằng chứng rời rạc, quá trình tổng hợp được chia làm 2 giai đoạn để tối ưu hóa hiệu năng:
+    - **Giai đoạn Gập (Nova Folding)**: Prover sử dụng thuật toán Nova để gập (fold) liên tiếp N bước kiểm tra trạng thái lại với nhau. Kết quả của quá trình này tạo ra một Trạng thái Gập cuối cùng (Final Folded Instance) duy nhất đại diện cho toàn bộ N bước kiểm tra.
+    - **Giai đoạn Nén (Spartan Wrapper)**: Sau khi xác minh việc gập nội bộ thành công, Prover sử dụng thuật toán chứng minh ZK-SNARK (cụ thể là Spartan) làm lớp bọc ngoài (Wrapper). Spartan sẽ biên dịch Trạng thái Gập cuối cùng thành một bằng chứng siêu nén (chỉ vài chục KB) với thời gian kiểm chứng hằng số O(1).
     - **Đệ trình (Submission)**: Bằng chứng Spartan tối hậu này sau đó được gửi lên mạng lưới xác minh (Layer 2 / DVN) để các node kiểm duyệt, từ đó hoàn thành thử thách Epoch.
 ### 1.3 Chi tiết luồng
 1. Khi prover tham gia hệ thống: prover tải public parameter từ trên mạng lưới chung. Để xác định mạng public parameter là đúng, prover phải tự đối chiếu với hệ thống gốc.
@@ -94,55 +100,65 @@ hoặc $\text{Poseidon2}(IV, D_1, \text{Prover\_ID}) == S_1$ (với $i = 1$).
     - bitcoin_hash_used: Mã băm của block Bitcoin được dùng làm hạt giống (seed) để tạo thử thách ngẫu nhiên.
     - shards_proven: Danh sách các chỉ số Shard cụ thể đã được chọn để chứng minh trong bước này.
 2. Tham số đối soát toán học:
-    - expected_z0: Giá trị Merkle Root ban đầu (trước khi thực hiện $N$ bước thử thách).
-    - expected_zi: Giá trị Merkle Root cuối cùng sau khi đã gập đủ $N$ bước qua mạch Nova.
+    - expected_z0: Giá trị Merkle Root ban đầu (trước khi thực hiện N bước thử thách).
+    - expected_zi: Giá trị Merkle Root cuối cùng sau khi đã gập đủ N bước qua mạch Nova.
 3. Tính toàn vẹn của bằng chứng:
     - spartan_proof_hash: Mã băm SHA-256 của file compressed_proof.bin. Điều này ngăn chặn việc tráo đổi bằng chứng nhị phân sau khi đã xuất metadata.
     - proof_artifact: Đường dẫn trỏ tới file nhị phân chứa bằng chứng thực tế.
 ### 1.4 Chi phí tính toán của Prover
 #### 1.4.1 Chi phí niêm phong ban đầu
 Chi phí này tốn CPU nhất nhưng chỉ thực hiện một lần duy nhất cho mỗi Shard dữ liệu.
-Công thức tổng quát cho thời gian niêm phong $T_{seal}$:$$T_{seal} = N \times (s \times t_{hash} + K \times t_{vdf})$$
-$N$: Tổng số lượng Shard.
-$s$: Kích thước mỗi Shard (tính theo số lượng Field Elements).
-$t_{hash}$: Thời gian thực hiện một hàm băm Poseidon2 trên một phần tử.
-$K$: Hệ số lặp (VDF delay) để tạo độ trễ vật lý.
-$t_{vdf}$: Thời gian thực hiện một vòng lặp VDF.
+Công thức tổng quát cho thời gian niêm phong:
 
-Đặc điểm: Do tính chất CBC, $T_{seal}$ là hàm tuyến tính theo $N$. Việc tăng số nhân CPU (Multi-core) không giúp giảm $T_{seal}$ cho một bản sao dữ liệu duy nhất.
+![](https://latex.codecogs.com/svg.image?T_{seal}%20=%20N%20\times%20(s%20\times%20t_{hash}%20+%20K%20\times%20t_{vdf}))
+
+Trong đó:
+- N: Tổng số lượng Shard.
+- s: Kích thước mỗi Shard (tính theo số lượng Field Elements).
+- t_hash: Thời gian thực hiện một hàm băm Poseidon2 trên một phần tử.
+- K: Hệ số lặp (VDF delay) để tạo độ trễ vật lý.
+- t_vdf: Thời gian thực hiện một vòng lặp VDF.
+
+Đặc điểm: Do tính chất CBC, T_seal là hàm tuyến tính theo N. Việc tăng số nhân CPU (Multi-core) không giúp giảm T_seal cho một bản sao dữ liệu duy nhất.
 #### 1.4.2 Chi phí Chứng minh định kỳ (PoSt Proving Cost)
 Đây là chi phí Prover phải trả mỗi Epoch để duy trì quyền lợi. Chi phí này được tối ưu hóa để cực thấp.
-Công thức tổng quát cho thời gian tạo bằng chứng $T_{prove}$:$$T_{prove} = \underbrace{n \times (t_{fold} + t_{hash\_jit})}_{\text{Folding Phase}} + \underbrace{t_{spartan}}_{\text{Snark Phase}}$$
-$n$: Số lượng Shard bị thử thách (ví dụ $n=100$).
-$t_{fold}$: Thời gian gập một bước Nova (phụ thuộc vào số lượng Constraints $m_{aug} \approx 3,300$).
-$t_{hash\_jit}$: Thời gian tính toán lại đường dẫn Merkle (Just-in-Time).
-$t_{spartan}$: Thời gian Spartan nén trạng thái gập cuối cùng thành SNARK.
+Công thức tổng quát cho thời gian tạo bằng chứng:
+
+![](https://latex.codecogs.com/svg.image?T_{prove}%20=%20\underbrace{n%20\times%20(t_{fold}%20+%20t_{hash\_jit})}_{Folding%20Phase}%20+%20\underbrace{t_{spartan}}_{Snark%20Phase})
+
+Trong đó:
+- n: Số lượng Shard bị thử thách (ví dụ n=100).
+- t_fold: Thời gian gập một bước Nova (phụ thuộc vào số lượng Constraints m_aug ≈ 3,300).
+- t_hash_jit: Thời gian tính toán lại đường dẫn Merkle (Just-in-Time).
+- t_spartan: Thời gian Spartan nén trạng thái gập cuối cùng thành SNARK.
 #### 1.4.3 Chi phí Bộ nhớ (Memory/RAM Cost)
-Đây là ưu điểm lớn nhất của Engram. Nhờ kiến trúc Folding, bộ nhớ RAM không phụ thuộc vào tổng dung lượng dữ liệu lưu trữ $D_{total}$.
-$$Memory_{prover} \approx Memory_{OS} + Memory_{Nova}(m_{aug})$$
-$Memory_{prover} \approx Constant$: Với $m_{aug} \approx 3,300$, lượng RAM tiêu thụ thực tế cho tiến trình mật mã luôn duy trì dưới 2 GB, bất kể Prover đang lưu trữ 100 GB hay 10 TB dữ liệu.
+Đây là ưu điểm lớn nhất của Engram. Nhờ kiến trúc Folding, bộ nhớ RAM không phụ thuộc vào tổng dung lượng dữ liệu lưu trữ:
+
+![](https://latex.codecogs.com/svg.image?Memory_{prover}%20\approx%20Memory_{OS}%20+%20Memory_{Nova}(m_{aug}))
+
+Memory_prover ≈ Constant: Với m_aug ≈ 3,300, lượng RAM tiêu thụ thực tế cho tiến trình mật mã luôn duy trì dưới 2 GB, bất kể Prover đang lưu trữ 100 GB hay 10 TB dữ liệu.
 
 ## Lớp 2: Lớp thuật toán xác minh bằng chứng
 
 **Mục tiêu và vai trò**: Layer 2 không phải là một thực thể vật lý (node) mà là tập hợp các logic xác minh mật mã học. Nhiệm vụ cốt lõi là trả lời câu hỏi: "Bằng chứng này có chứng minh được Prover đang lưu trữ dữ liệu chính xác trong khoảng thời gian quy định hay không?"
-- Tính tinh gọn (Succinctness): Thời gian xác minh phải cực nhanh ($O(\log N)$ hoặc $O(1)$) dù dữ liệu gốc có kích thước Terabytes.
+- Tính tinh gọn (Succinctness): Thời gian xác minh phải cực nhanh (O(log N) hoặc O(1)) dù dữ liệu gốc có kích thước Terabytes.
 - Tính phi tập trung: Thuật toán được thiết kế để bất kỳ node nào ở Layer 3 (DVN) cũng có thể chạy và đưa ra kết quả đồng nhất.
 
 **Kiến trúc Thuật toán Cốt lõi**: 
 - **Spartan IPA Verifier** (Xác minh Inner Product Argument): Thay vì kiểm tra hàng triệu ràng buộc R1CS, Layer 2 sử dụng Polynomial Commitments (Cam kết Đa thức) kết hợp với giao thức Inner Product Argument (IPA) của Spartan
-    - Thuật toán lấy Verifier Key ($vk$) làm "đáp án chuẩn".
+    - Thuật toán lấy Verifier Key (vk) làm "đáp án chuẩn".
     - Nó chạy giao thức Sum-check (Kiểm tra tổng) thu gọn để chứng minh rằng: Prover ở Layer 1 thực sự biết một ma trận thỏa mãn phương trình R1CS mà không cần Prover phải gửi ma trận đó qua mạng.
 - **Public IO Integrity** (Bảo vệ Tính toàn vẹn Trạng thái): Ngay cả khi bằng chứng Spartan đúng về mặt toán học, Layer 2 vẫn phải kiểm tra xem bằng chứng đó có dành cho đúng file và đúng Epoch hay không.
 Nó thực hiện đối soát 2 biến Public Inputs:
-    - Trạng thái đầu ($z_0$): Chứa ID của Prover và Mã băm của Sector ban đầu.
-    - Trạng thái cuối ($z_i$): Chứa Merkle Root của dữ liệu sau khi bị băm.
-Nếu thuật toán Spartan trả về $z_{computed}$ khớp hoàn toàn với $z_{expected}$, bằng chứng mới chính thức hợp lệ.
+    - Trạng thái đầu (z_0): Chứa ID của Prover và Mã băm của Sector ban đầu.
+    - Trạng thái cuối (z_i): Chứa Merkle Root của dữ liệu sau khi bị băm.
+Nếu thuật toán Spartan trả về z_computed khớp hoàn toàn với z_expected, bằng chứng mới chính thức hợp lệ.
 
 **Luồng Thực thi của Thuật toán (Verification Pipeline)**: 
 1. Hash Check (Bảo vệ I/O): Tính mã băm SHA-256 của toàn bộ file .bin và so sánh với spartan_proof_hash trong file JSON. Ngăn chặn việc file bị tráo đổi trong quá trình truyền tải.
 2. Setup (Nạp VK): Đọc file vk.bin từ Genesis Setup (Layer 0) vào RAM. Đây là tham số mạng lưới không thể giả mạo.
 3. Deserialize: Chuyển đổi mảng byte của bằng chứng thành cấu trúc CompressedSNARK trong Rust.
-4. The Math Step (proof.verify): Đưa bằng chứng, số bước đã gập (num_steps), và trạng thái $z_0$ vào hàm xác minh. Nếu hàm trả về $z_i$ hợp lệ, chứng tỏ toàn bộ chuỗi tính toán Poseidon2 tại Layer 1 là chính xác tuyệt đối.
+4. The Math Step (proof.verify): Đưa bằng chứng, số bước đã gập (num_steps), và trạng thái z_0 vào hàm xác minh. Nếu hàm trả về z_i hợp lệ, chứng tỏ toàn bộ chuỗi tính toán Poseidon2 tại Layer 1 là chính xác tuyệt đối.
 
 ## Lớp 3: Lớp các node được ủy quyền xác minh
 
@@ -159,7 +175,7 @@ Layer 3 không phải là môi trường Smart Contract mà là các máy chủ 
     - Các bằng chứng nằm trong Mempool có trạng thái "Chờ xác minh" (PENDING).
 2. **Verifier Bridge (Cầu nối Layer 2)**
     - Sequencer không tự mình biết toán học ZK. Nó đóng vai trò "Trạm gọi lệnh", khởi chạy tiến trình Rust của Layer 2 thông qua Subprocess (hoặc RPC/API trong thực tế).
-    - Luồng chạy: Đọc file JSON từ Mempool $\rightarrow$ Gọi lệnh cargo run của Layer 2 $\rightarrow$ Nhận lại kết quả nhị phân (PASS/FAIL).
+    - Luống chạy: Đọc file JSON từ Mempool → Gọi lệnh cargo run của Layer 2 → Nhận lại kết quả nhị phân (PASS/FAIL).
 3. **Batch Merkle Tree (Cây tổng hợp)**
     - Những bằng chứng nào được Layer 2 đánh giá là PASS, Sequencer sẽ lấy spartan_proof_hash của chúng để xây dựng một cây Merkle tổng hợp (Batch Merkle Tree).
     - Đầu ra: Một mã băm duy nhất (Batch Merkle Root). Việc này giúp nén hàng nghìn trạng thái thành 32 bytes dữ liệu.
@@ -284,20 +300,21 @@ Tài liệu này chi tiết hóa các biến số và hệ thức toán học x�
 ### 1. Biến số Dữ liệu & Cấu trúc
 | Biến | Ý nghĩa | Đơn vị | Công thức |
 | :--- | :--- | :--- | :--- |
-| $S$ | Kích thước tổng của 1 Sector | Bytes | - |
-| $b$ | Kích thước của 1 Shard | Bytes | - |
-| $N$ | Số lượng Shard trong 1 Sector | - | $N = \frac{S}{b}$ |
-| $D$ | Độ sâu của cây Merkle | - | $D = \lceil \log_2(N) \rceil$ |
+| S | Kích thước tổng của 1 Sector | Bytes | - |
+| b | Kích thước của 1 Shard | Bytes | - |
+| N | Số lượng Shard trong 1 Sector | - | ![](https://latex.codecogs.com/svg.image?N%20=%20\frac{S}{b}) |
+| D | Độ sâu của cây Merkle | - | ![](https://latex.codecogs.com/svg.image?D%20=%20\lceil%20\log_2(N)%20\rceil) |
 
 ### 2. Biến số ZK & Mật mã học
-*   **$W$**: Dung lượng tối đa Poseidon2 xử lý trong 1 vòng (32 hoặc 64 bytes).
-*   **$C_{pos}$**: Số lượng R1CS Constraints cho 1 lần chạy hàm Poseidon2 ($\approx 250 - 300$).
-*   **$c$**: Số lượng thử thách (Challenges) trong 1 Epoch.
-*   **$K$**: Số lượng Prover gửi bằng chứng đồng thời.
+*   **W**: Dung lượng tối đa Poseidon2 xử lý trong 1 vòng (32 hoặc 64 bytes).
+*   **C_pos**: Số lượng R1CS Constraints cho 1 lần chạy hàm Poseidon2 (≈ 250 - 300).
+*   **c**: Số lượng thử thách (Challenges) trong 1 Epoch.
+*   **K**: Số lượng Prover gửi bằng chứng đồng thời.
 
 ### 3. Biến số Lõi (The Bottleneck Variable)
 Đây là biến số quyết định toàn bộ yêu cầu về RAM và thời gian xử lý:
-$$C_{step}(b) = C_{pos} \cdot \underbrace{\left\lceil \frac{b}{W} \right\rceil}_{\text{Băm dữ liệu Shard}} + C_{pos} \cdot \underbrace{\lceil \log_2\left(\frac{S}{b}\right) \rceil}_{\text{Băm Merkle Path}}$$
+
+![](https://latex.codecogs.com/svg.image?C_{step}(b)%20=%20C_{pos}%20\cdot%20\underbrace{\left\lceil%20\frac{b}{W}%20\right\rceil}_{Băm%20dữ%20liệu%20Shard}%20+%20C_{pos}%20\cdot%20\underbrace{\lceil%20\log_2\left(\frac{S}{b}\right)%20\rceil}_{Băm%20Merkle%20Path})
 
 ---
 
@@ -305,48 +322,53 @@ $$C_{step}(b) = C_{pos} \cdot \underbrace{\left\lceil \frac{b}{W} \right\rceil}_
 
 ### 🟦 LAYER 0: GENESIS SETUP (Khởi tạo)
 *Yêu cầu phần cứng khắt khe nhất để tạo tham số.*
-*   **Thời gian Setup:** $T_{L0} = O(C_{step} \cdot \log(C_{step}))$
-*   **RAM Đỉnh:** $RAM_{L0\_Peak} = \lambda_{setup} \cdot C_{step}$
+*   **Thời gian Setup:** ![](https://latex.codecogs.com/svg.image?T_{L0}%20=%20O(C_{step}%20\cdot%20\log(C_{step})))
+*   **RAM Đỉnh:** RAM_L0_Peak = λ_setup · C_step
 
 ### 🟧 LAYER 1: PROVER (Nút thắt cổ chai Compute)
 *Bao gồm Sealing (Merkle), Folding (Nova), và Compression (Spartan).*
-*   **Thời gian tổng ($T_{L1}$):**
-    $$T_{L1} = \underbrace{T_{hash} \cdot \left( \frac{S}{W} + 2\frac{S}{b} \right)}_{\text{Sealing}} + \underbrace{c \cdot T_{fold}(C_{step})}_{\text{Nova Folding}} + \underbrace{T_{spartan}(C_{step})}_{\text{Spartan Prove}}$$
-*   **RAM Đỉnh:** $RAM_{L1\_Peak} = RAM_{load\_keys}(|pp| + |pk|) + \lambda_{fold} \cdot C_{step}$
+*   **Thời gian tổng:**
+
+![](https://latex.codecogs.com/svg.image?T_{L1}%20=%20\underbrace{T_{hash}%20\cdot%20\left(%20\frac{S}{W}%20+%202\frac{S}{b}%20\right)}_{Sealing}%20+%20\underbrace{c%20\cdot%20T_{fold}(C_{step})}_{Nova%20Folding}%20+%20\underbrace{T_{spartan}(C_{step})}_{Spartan%20Prove})
+
+*   **RAM Đỉnh:** RAM_L1_Peak = RAM_load_keys(|pp| + |pk|) + λ_fold · C_step
 
 ### 🟩 LAYER 2: VERIFIER / DVN (Xác minh)
 *Tính chất Succinct (ngắn gọn), thắt cổ chai nằm ở I/O.*
-*   **Thời gian xác minh:** $T_{L2} = T_{deser}(|Proof_{bin}|) + O(\log(C_{step})) \cdot T_{pairing}$
-*   **RAM Đỉnh:** $RAM_{L2\_Peak} = |VK_{bin}| + \lambda_{deser} \cdot |Proof_{bin}|$
+*   **Thời gian xác minh:** ![](https://latex.codecogs.com/svg.image?T_{L2}%20=%20T_{deser}(|Proof_{bin}|)%20+%20O(\log(C_{step}))%20\cdot%20T_{pairing})
+*   **RAM Đỉnh:** RAM_L2_Peak = |VK_bin| + λ_deser · |Proof_bin|
 
 ### 🟨 LAYER 3: SEQUENCER (Điều phối)
 *Xử lý gom cụm off-chain.*
-*   **Thời gian Batching:** $T_{L3} = K \cdot T_{L2} + (2K - 1) \cdot T_{sha256}$
-*   **Mempool Storage:** $Storage_{L3} = K \cdot (|Proof_{bin}| + |Metadata_{json}|)$
+*   **Thời gian Batching:** ![](https://latex.codecogs.com/svg.image?T_{L3}%20=%20K%20\cdot%20T_{L2}%20+%20(2K%20-%201)%20\cdot%20T_{sha256})
+*   **Mempool Storage:** ![](https://latex.codecogs.com/svg.image?Storage_{L3}%20=%20K%20\cdot%20(|Proof_{bin}|%20+%20|Metadata_{json}|))
 
 ### 🟥 LAYER 4: OPTIMISTIC SMART CONTRACT (Ethereum L1)
 1.  **Chi phí Lạc quan (Happy Path):**
-    $$Gas_{L4\_Happy} = Gas_{base} + Gas_{calldata}(|BatchRoot| + |DA\_Ref|)$$
+
+![](https://latex.codecogs.com/svg.image?Gas_{L4\_Happy}%20=%20Gas_{base}%20+%20Gas_{calldata}(|BatchRoot|%20+%20|DA\_Ref|))
+
 2.  **Chi phí Tranh chấp (Dispute Resolution):**
-    $$Gas_{L4\_Dispute} = Gas_{base} + Gas_{Spartan\_Verify\_Onchain}(C_{step})$$
+
+![](https://latex.codecogs.com/svg.image?Gas_{L4\_Dispute}%20=%20Gas_{base}%20+%20Gas_{Spartan\_Verify\_Onchain}(C_{step}))
 
 ---
 
 ### 💡 Chú giải ký hiệu
-*   $\lambda$: Hệ số tải tài nguyên của thư viện (Rust/C++ implementation).
-*   $| \cdot |$: Kích thước tệp tin/dữ liệu.
-*   $T_{hash} / T_{pairing}$: Thời gian xử lý đơn vị của thuật toán băm/ghép cặp.
+*   λ: Hệ số tải tài nguyên của thư viện (Rust/C++ implementation).
+*   |·|: Kích thước tệp tin/dữ liệu.
+*   T_hash / T_pairing: Thời gian xử lý đơn vị của thuật toán băm/ghép cặp.
 
 ⚙️ Lựa chọn Tham số & Tối ưu hóa (Parameter Selection & Optimization)
 ## Ⅲ. PHÂN TÍCH ĐIỂM TỐI ƯU (THE TRADE-OFF)
 
-Hệ thống đối mặt với sự đánh đổi chiến lược giữa **Kích thước Shard ($b$)** và **Độ sâu cây Merkle ($D$)**:
+Hệ thống đối mặt với sự đánh đổi chiến lược giữa **Kích thước Shard (b)** và **Độ sâu cây Merkle (D)**:
 
 *   **Shard quá nhỏ (64 Bytes):** 
-    *   *Ưu điểm:* Tối ưu số lượng ràng buộc ($C_{step}$ thấp).
+    *   *Ưu điểm:* Tối ưu số lượng ràng buộc (C_step thấp).
     *   *Nhược điểm:* Tạo ra hàng triệu file nhỏ, gây thắt cổ chai I/O cực nặng cho SSD (Disk Thrashing).
 *   **Shard quá lớn (16384 Bytes):** 
-    *   *Ưu điểm:* Giảm độ sâu cây Merkle ($D$).
+    *   *Ưu điểm:* Giảm độ sâu cây Merkle (D).
     *   *Nhược điểm:* Làm mạch ZK phình to, dễ vượt ngưỡng RAM vật lý cho phép.
 
 > **Quyết định thiết kế:** Hệ thống lựa chọn kích thước Shard **4096 Bytes (4 KB)** để khớp hoàn hảo với kích thước vật lý của một **Block trên SSD/NVMe**, giúp tối ưu hóa tốc độ đọc dữ liệu thô và giảm thiểu độ trễ I/O.
@@ -361,11 +383,11 @@ Dựa trên các phân tích toán học và thực nghiệm từ công cụ `op
 
 | Tham số | Giá trị | Ý nghĩa & Mục tiêu kỹ thuật |
 | :--- | :--- | :--- |
-| **Dung lượng Sector ($S$)** | 32 GB | Quy mô lưu trữ lớn cho mỗi node thực tế. |
-| **Kích thước Shard ($b$)** | 4096 Bytes | **SSD Alignment**: Khớp hoàn hảo với Block 4KB, tối ưu I/O. |
-| **Độ sâu Merkle ($D$)** | 23 Tầng | Cân bằng thời gian băm Merkle Path và kích thước mạch ZK. |
-| **Số thử thách ($c$)** | 460 Lần | Tăng cường bảo mật, phát hiện gian lận tinh vi nhất. |
-| **Ràng buộc mạch ($C_{step}$)** | ~21,750 | Số lượng R1CS tối ưu cho mỗi bước gập (Folding). |
+| **Dung lượng Sector (S)** | 32 GB | Quy mô lưu trữ lớn cho mỗi node thực tế. |
+| **Kích thước Shard (b)** | 4096 Bytes | **SSD Alignment**: Khớp hoàn hảo với Block 4KB, tối ưu I/O. |
+| **Độ sâu Merkle (D)** | 23 Tầng | Cân bằng thời gian băm Merkle Path và kích thước mạch ZK. |
+| **Số thử thách (c)** | 460 Lần | Tăng cường bảo mật, phát hiện gian lận tinh vi nhất. |
+| **Ràng buộc mạch (C_step)** | ~21,750 | Số lượng R1CS tối ưu cho mỗi bước gập (Folding). |
 | **RAM Đỉnh điểm (Peak)** | ~1.93 GB | Vắt kiệt tài nguyên trong ngưỡng an toàn phần cứng (8GB RAM). |
 
 ---
@@ -373,15 +395,15 @@ Dựa trên các phân tích toán học và thực nghiệm từ công cụ `op
 ## 🛡️ V. ĐÁNH GIÁ ĐỘ AN TOÀN & BẢO MẬT MẬT MÃ
 
 ### 1. Xác suất phát hiện gian lận
-Hệ thống sử dụng $c = 460$ thử thách ngẫu nhiên mỗi Epoch. Nếu Prover xóa tỷ lệ $f = 1\%$ dữ liệu, xác suất phát hiện ($P_{detect}$) là:
+Hệ thống sử dụng 460 thử thách ngẫu nhiên mỗi Epoch. Nếu Prover xóa tỷ lệ 1% dữ liệu, xác suất phát hiện là:
 
-$$P_{detect} = 1 - (1 - f)^c = 1 - (1 - 0.01)^{460} \approx 99.02\%$$
+![](https://latex.codecogs.com/svg.image?P_{detect}%20=%201%20-%20(1%20-%20f)^c%20=%201%20-%20(1%20-%200.01)^{460}%20\approx%2099.02%25)
 
 > **Phân tích:** Rủi ro bị phát hiện >99% tạo ra rào cản kinh tế cực lớn, khiến việc gian lận không khả thi so với hình phạt **Slashing** (mất tiền cọc).
 
 ### 2. Mô phỏng với các kích thước Shard thực tế
 
-| Shard Size | Độ sâu ($D$) | Constraints | Peak RAM | T_honest (s) | T_cheat (s) | An toàn VDF | Phí/Epoch ($) |
+| Shard Size | Độ sâu | Constraints | Peak RAM | T_honest (s) | T_cheat (s) | An toàn VDF | Phí/Epoch |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | 64 B | 29 | 7,500 | 502 MB ✅ | 1209 s | 54896 s | 🛡️ TỐT | $0.00721 |
 | 128 B | 28 | 7,500 | 502 MB ✅ | 941 s | 27784 s | 🛡️ TỐT | $0.00566 |
@@ -401,7 +423,7 @@ $$P_{detect} = 1 - (1 - f)^c = 1 - (1 - 0.01)^{460} \approx 99.02\%$$
 *   **Kích thước Sector**: 32 GB
 *   **Tổng số Shard**: 8,388,608 mảnh (Tương thích SSD 4KB block)
 *   **Độ sâu Merkle Tree**: 23 tầng
-*   **Kích thước mạch ZK ($C_{step}$)**: 21,750 R1CS Constraints
+*   **Kích thước mạch ZK (C_step)**: 21,750 R1CS Constraints
 *   **Đỉnh mức RAM tiêu thụ**: 506 MB (An toàn < 2.0GB)
 
 ### B. Thiết lập cửa sổ Epoch & Bảo mật
