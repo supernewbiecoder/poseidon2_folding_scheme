@@ -129,10 +129,10 @@ $Memory_{prover} \approx Constant$: Với $m_{aug} \approx 3,300$, lượng RAM 
 - Tính phi tập trung: Thuật toán được thiết kế để bất kỳ node nào ở Layer 3 (DVN) cũng có thể chạy và đưa ra kết quả đồng nhất.
 
 **Kiến trúc Thuật toán Cốt lõi**: 
-- Spartan IPA Verifier (Xác minh Inner Product Argument): Thay vì kiểm tra hàng triệu ràng buộc R1CS, Layer 2 sử dụng Polynomial Commitments (Cam kết Đa thức) kết hợp với giao thức Inner Product Argument (IPA) của Spartan
+- **Spartan IPA Verifier** (Xác minh Inner Product Argument): Thay vì kiểm tra hàng triệu ràng buộc R1CS, Layer 2 sử dụng Polynomial Commitments (Cam kết Đa thức) kết hợp với giao thức Inner Product Argument (IPA) của Spartan
     - Thuật toán lấy Verifier Key ($vk$) làm "đáp án chuẩn".
     - Nó chạy giao thức Sum-check (Kiểm tra tổng) thu gọn để chứng minh rằng: Prover ở Layer 1 thực sự biết một ma trận thỏa mãn phương trình R1CS mà không cần Prover phải gửi ma trận đó qua mạng.
-- Public IO Integrity (Bảo vệ Tính toàn vẹn Trạng thái): Ngay cả khi bằng chứng Spartan đúng về mặt toán học, Layer 2 vẫn phải kiểm tra xem bằng chứng đó có dành cho đúng file và đúng Epoch hay không.
+- **Public IO Integrity** (Bảo vệ Tính toàn vẹn Trạng thái): Ngay cả khi bằng chứng Spartan đúng về mặt toán học, Layer 2 vẫn phải kiểm tra xem bằng chứng đó có dành cho đúng file và đúng Epoch hay không.
 Nó thực hiện đối soát 2 biến Public Inputs:
     - Trạng thái đầu ($z_0$): Chứa ID của Prover và Mã băm của Sector ban đầu.
     - Trạng thái cuối ($z_i$): Chứa Merkle Root của dữ liệu sau khi bị băm.
@@ -148,38 +148,57 @@ Nếu thuật toán Spartan trả về $z_{computed}$ khớp hoàn toàn với $
 
 **Mục tiêu và Vai trò**: Layer 3 (Sequencer/DVN) giải quyết bài toán thắt cổ chai về phí giao dịch (Gas fee) trên blockchain. Nếu hàng nghìn Prover (Layer 1) trực tiếp gửi bằng chứng lên Ethereum, mạng lưới sẽ tắc nghẽn và chi phí sẽ khổng lồ.
 Nhiệm vụ cốt lõi: 
-- Gom cụm (Batching): Tập hợp hàng ngàn bằng chứng ZK từ các Prover khác nhau thành một "Batch" duy nhất.
+- Gom cụm (Batching): Tập hợp bằng chứng ZK từ các Prover khác nhau thành một "Batch" duy nhất.
 - Xác minh nội bộ: Gọi thuật toán Layer 2 để lọc bỏ các bằng chứng sai lệch trước khi đóng gói.
 - Cam kết trạng thái (State Commitment): Tạo ra một Batch Merkle Root duy nhất đại diện cho toàn bộ Epoch và gửi lên Layer 4.
 
 **Kiến trúc và Thành phần cốt lõi**
 Layer 3 không phải là môi trường Smart Contract mà là các máy chủ chạy Off-chain (sử dụng Python/Node.js/Go). Một Node Layer 3 điển hình bao gồm các thành phần:
-1. Mempool (Hồ chứa chờ)
+1. **Mempool (Hồ chứa chờ)**
     - Khi Prover (Layer 1) tạo xong bằng chứng (.bin và .json), nó sẽ gửi dữ liệu này vào Mempool của Sequencer được chỉ định cho Epoch đó.
     - Các bằng chứng nằm trong Mempool có trạng thái "Chờ xác minh" (PENDING).
-2. Verifier Bridge (Cầu nối Layer 2)
+2. **Verifier Bridge (Cầu nối Layer 2)**
     - Sequencer không tự mình biết toán học ZK. Nó đóng vai trò "Trạm gọi lệnh", khởi chạy tiến trình Rust của Layer 2 thông qua Subprocess (hoặc RPC/API trong thực tế).
     - Luồng chạy: Đọc file JSON từ Mempool $\rightarrow$ Gọi lệnh cargo run của Layer 2 $\rightarrow$ Nhận lại kết quả nhị phân (PASS/FAIL).
-3. Batch Merkle Tree (Cây tổng hợp)
+3. **Batch Merkle Tree (Cây tổng hợp)**
     - Những bằng chứng nào được Layer 2 đánh giá là PASS, Sequencer sẽ lấy spartan_proof_hash của chúng để xây dựng một cây Merkle tổng hợp (Batch Merkle Tree).
     - Đầu ra: Một mã băm duy nhất (Batch Merkle Root). Việc này giúp nén hàng nghìn trạng thái thành 32 bytes dữ liệu.
+
+Đầu ra mẫu của Layer3:
+```
+{
+    "sequencer_id": "DVN_1",
+    "epoch": "10000",
+    "batch_merkle_root": "3853a97d563c51fb4b2e477b37c49539f8dbee78711daa21acf5194c3d0902f9",
+    "summary": [
+        {
+            "prover_id": "1001",
+            "result": "pass"
+        },
+        {
+            "prover_id": "1002",
+            "result": "pass"
+        }
+    ]
+}
+```
 
 **Quy trình Đóng gói và Đệ trình (Submit Pipeline)**
 Quy trình hoạt động của Sequencer trong 1 Epoch được mô tả qua các bước sau:
 
-1. Lắng nghe & Thu thập: Thu thập bằng chứng từ các Prover trong một khoảng thời gian cố định.
+1. **Lắng nghe & Thu thập**: Thu thập bằng chứng từ các Prover trong một khoảng thời gian cố định.
 
-2. Lọc dữ liệu rác: Xóa các bằng chứng không đúng định dạng hoặc sai Epoch.
+2. **Lọc dữ liệu rác**: Xóa các bằng chứng không đúng định dạng hoặc sai Epoch.
 
-3. Xác minh song song: Gọi Layer 2 xác minh hàng loạt các bằng chứng hợp lệ.
+3. **Xác minh song song**: Gọi Layer 2 xác minh hàng loạt các bằng chứng hợp lệ.
 
-4. Xây dựng Merkle Root: Tính toán Batch Merkle Root cho các bằng chứng PASS.
+4. **Xây dựng Merkle Root**: Tính toán Batch Merkle Root cho các bằng chứng PASS.
 
-5. Lưu trữ Data Availability (DA): (Mô phỏng) Đẩy toàn bộ chi tiết báo cáo lên một mạng lưu trữ phi tập trung (như IPFS/Arweave) để mọi người có thể kiểm tra lại. Lấy về một mã tham chiếu (CID).
+5. **Lưu trữ Data Availability (DA)**: (Mô phỏng) Đẩy toàn bộ chi tiết báo cáo lên một mạng lưu trữ phi tập trung (như IPFS/Arweave) để mọi người có thể kiểm tra lại. Lấy về một mã tham chiếu (CID).
 
-6. Ký số ECDSA: Sequencer sử dụng Private Key (định dạng SECP256k1 của Ethereum) để ký lên gói dữ liệu (Payload).
+6. **Ký số ECDSA**: Sequencer sử dụng Private Key (định dạng SECP256k1 của Ethereum) để ký lên gói dữ liệu (Payload).
 
-7. Đệ trình lên Layer 4: Gửi giao dịch chứa (Epoch, Batch Root, CID, Chữ ký) vào Inbox của Smart Contract trên Layer 4.
+7. **Đệ trình lên Layer 4**: Gửi giao dịch chứa (Epoch, Batch Root, CID, Chữ ký) vào Inbox của Smart Contract trên Layer 4.
 
 **Rủi ro và Cơ chế chống gian lận**
 Vì Layer 3 là Off-chain và do một cá nhân/tổ chức điều hành, họ có thể gian lận bằng cách:
@@ -191,29 +210,48 @@ Vì Layer 3 là Off-chain và do một cá nhân/tổ chức điều hành, họ
 Giải pháp của Engram (Kết nối với Layer 4):
 Sequencer không có quyền chốt sổ cuối cùng. Nó chỉ được phép đệ trình một "Trạng thái Lạc quan" (Optimistic State) lên Layer 4 và phải đặt cọc tiền (Stake). Nếu ai đó phát hiện Sequencer gian lận (bằng cách kiểm tra lại dữ liệu trên DA Layer), họ có thể cung cấp Bằng chứng Gian lận (Fraud Proof) tại Layer 4, khiến Sequencer bị mất trắng tiền cọc (Slashing).
 
+Đầu ra đệ trình lên ethereum của Layer3:
+```
+[
+    {
+        "sequencer_id": "DVN_1",
+        "timestamp": 1778816039,
+        "payload": {
+            "epoch": "10000",
+            "batch_merkle_root": "3853a97d563c51fb4b2e477b37c49539f8dbee78711daa21acf5194c3d0902f9",
+            "da_reference": "ipfs://2b17a51b6f9398b77eed644638b25cd7f58eb9d082ba07f82eb8305b36511639",
+            "stake_amount": "10 ETH"
+        },
+        "signature_hex": "3045022100c3d01f17d664fbd286fdf983ebe6552b3c77ea48641c63a71d75c0d95359ac4902204d2832c0d82e1f8633d06276deb6c7f3b668167512f240127431f84af0de61db",
+        "public_key_hex": "99652e571eabe98574d9f9befce64f6b59c7f2a2ae4e1965a92a3ac018969227a39e8689b30125fa82a2ec68e1782aaec510b35e105967e0aba3e08bd4a4d79e",
+        "status": "PENDING_CHALLANGE"
+    }
+]
+```
+
 ## Lớp 4: Optimistic Smart Contract Layer
 **Mục tiêu và Vai trò**: Layer 4 được triển khai dưới dạng một Smart Contract trên mạng lưới Ethereum. Nếu Layer 1, 2, 3 thiên về tính toán mật mã và gom cụm dữ liệu off-chain, thì Layer 4 tập trung hoàn toàn vào Bảo mật Kinh tế (Crypto-economic Security) và Phân xử tranh chấp (Dispute Resolution).
 Nhiệm vụ cốt lõi:
-- Lưu trữ trạng thái tạm thời: Nhận các Batch Merkle Root từ Layer 3 (Sequencer) và lưu trữ chúng.
+- **Lưu trữ trạng thái tạm thời**: Nhận các Batch Merkle Root từ Layer 3 (Sequencer) và lưu trữ chúng.
 
-- Tòa án phân xử: Cung cấp một khoảng thời gian (Challenge Window) để bất kỳ ai cũng có thể khiếu nại nếu phát hiện Sequencer gian lận.
+- **Tòa án phân xử**: Cung cấp một khoảng thời gian (Challenge Window) để bất kỳ ai cũng có thể khiếu nại nếu phát hiện Sequencer gian lận.
 
-- Trừng phạt (Slashing): Tịch thu tiền cọc (Stake) của các node làm sai.
+- **Trừng phạt (Slashing)**: Tịch thu tiền cọc (Stake) của các node làm sai.
 
-- Chốt sổ (Finalization): Xác nhận trạng thái cuối cùng (Immutable) để chuẩn bị đẩy lên Bitcoin (Layer 5).
+- **Chốt sổ (Finalization)**: Xác nhận trạng thái cuối cùng (Immutable) để chuẩn bị đẩy lên Bitcoin (Layer 5).
 
 **Cơ chế Hoạt động "Lạc quan" (Optimistic Rollup)**: Layer 4 không trực tiếp chạy thuật toán xác minh ZK của Layer 2 vì phí Gas trên Ethereum để chạy các phép toán hình học đại số rất đắt đỏ. Thay vào đó, nó sử dụng cơ chế Optimistic (Lạc quan).
 
-1. Giả định tin tưởng (Trust Assumption)
+1. **Giả định tin tưởng** (Trust Assumption)
     - Khi một Sequencer (Layer 3) đệ trình một Batch Root lên Layer 4 kèm theo một lượng tiền cọc (VD: 10 ETH), Smart Contract sẽ mặc định tin rằng dữ liệu này là đúng. 
     - Bản tin này sẽ được đưa vào "Phòng chờ" (Inbox) với trạng thái PENDING_CHALLENGE.
-2. Cửa sổ Thử thách (Challenge Window)
- - Đây là khoảng thời gian ân hạn (trong thực tế thường là 7 ngày, trong code mô phỏng là 60 giây).
+2. **Cửa sổ Thử thách** (Challenge Window)
+    - Đây là khoảng thời gian ân hạn (trong thực tế thường là 7 ngày, trong code mô phỏng là 60 giây).
 
- - Trong suốt thời gian này, dữ liệu chưa được coi là chính thức. Bất kỳ node nào đóng vai trò là "Người quan sát" (Challenger) cũng có thể tải dữ liệu từ Data Availability (DA) về, tự chạy lại Layer 2 để kiểm tra.
+    - Trong suốt thời gian này, dữ liệu chưa được coi là chính thức. Bất kỳ node nào đóng vai trò là "Người quan sát" (Challenger) cũng có thể tải dữ liệu từ Data Availability (DA) về, tự chạy lại Layer 2 để kiểm tra.
 
- 3. Cơ chế Trừng phạt và Chốt sổ (Slashing & Settlement)
- Đây là cơ chế tạo ra động lực tài chính ép các Sequencer phải trung thực tuyệt đối.
+ 3. **Cơ chế Trừng phạt và Chốt sổ** (Slashing & Settlement)
+    - Đây là cơ chế tạo ra động lực tài chính ép các Sequencer phải trung thực tuyệt đối.
 
 **Kịch bản 1: Có gian lận (Fraud Detected)**
 1. Phát hiện: Nếu Challenger phát hiện Sequencer gửi lên bằng chứng sai (Ví dụ: báo PASS cho một Prover thực chất đã FAIL).
@@ -269,7 +307,6 @@ $$C_{step}(b) = C_{pos} \cdot \underbrace{\left\lceil \frac{b}{W} \right\rceil}_
 *Yêu cầu phần cứng khắt khe nhất để tạo tham số.*
 *   **Thời gian Setup:** $T_{L0} = O(C_{step} \cdot \log(C_{step}))$
 *   **RAM Đỉnh:** $RAM_{L0\_Peak} = \lambda_{setup} \cdot C_{step}$
-    > *Lưu ý: Thường yêu cầu 128GB - 256GB RAM nếu $C_{step}$ lớn.*
 
 ### 🟧 LAYER 1: PROVER (Nút thắt cổ chai Compute)
 *Bao gồm Sealing (Merkle), Folding (Nova), và Compression (Spartan).*
