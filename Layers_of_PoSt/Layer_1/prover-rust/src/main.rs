@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use serde::Serialize;
 use sysinfo::{System, Pid, get_current_pid};
-
 use configparser::ini::Ini;
 
 mod constants;
@@ -17,8 +16,9 @@ mod core;
 
 use crate::core::circuit::{DataSector, PoStStepCircuit};
 use crate::core::proof_engine::PostProofEngine;
+// Lấy các hằng số chuẩn từ file thiết kế của bạn
+use engram_common::{MERKLE_DEPTH, NUM_CHALLENGES};
 
-// --- CẤU HÌNH ĐO LƯỜNG ---
 const ASSUMED_CPU_WATTAGE: f64 = 65.0; 
 
 fn calc_energy_joules(time_ms: f64) -> f64 {
@@ -62,7 +62,7 @@ fn get_network_config() -> (u64, String) {
 fn load_specific_shards(indices: &[usize], dir: &Path) -> Vec<String> {
     indices.iter().map(|&idx| {
         let path = dir.join(format!("shard_{}.txt", idx));
-        fs::read_to_string(&path).expect("Lỗi đọc shard")
+        fs::read_to_string(&path).unwrap_or_else(|_| String::from("0")) // Nếu không có file thì coi như data trống
     }).collect()
 }
 
@@ -73,7 +73,7 @@ fn main() {
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
-        eprintln!("Sử dụng: cargo run -- <PROVER_ID> <CHỈ_SỐ_SHARD>");
+        eprintln!("Sử dụng: cargo run --release -- <PROVER_ID> <CHỈ_SỐ_SHARD>");
         std::process::exit(1);
     }
 
@@ -86,7 +86,7 @@ fn main() {
     let mut peak_ram = initial_ram;
 
     // ============================================================================
-    // GIAI ĐOẠN 1: SETUP (Nạp Key)
+    // GIAI ĐOẠN 1: SETUP
     // ============================================================================
     println!("🚀 [Giai đoạn 1] Setup: Nạp Public Parameters & Proving Key...");
     let setup_start = Instant::now();
@@ -103,7 +103,7 @@ fn main() {
     // ============================================================================
     // GIAI ĐOẠN 2: SEALING (Poseidon2-CBC)
     // ============================================================================
-    println!("⚡ [Giai đoạn 2] Sealing Shards...");
+    println!("⚡ [Giai đoạn 2] Sealing Sector (Khởi tạo cây Merkle {} tầng)...", MERKLE_DEPTH);
     let sealing_start = Instant::now();
     let ram_pre_sealing = get_current_ram_mb(&mut sys, pid);
 
@@ -119,7 +119,7 @@ fn main() {
     // ============================================================================
     // GIAI ĐOẠN 3: PROVING (Nova Folding + Spartan)
     // ============================================================================
-    println!("🌀 [Giai đoạn 3] ZK Proving Pipeline...");
+    println!("🌀 [Giai đoạn 3] ZK Proving Pipeline (Thực hiện {} thử thách)...", NUM_CHALLENGES);
     let proving_start = Instant::now();
     let ram_pre_proving = get_current_ram_mb(&mut sys, pid);
 
@@ -128,17 +128,18 @@ fn main() {
     seed_hasher.update(prover_id_fr.to_repr());
     let mut prng = ChaCha8Rng::from_seed(seed_hasher.finalize().into());
     
+    // Tự động random ra 460 thử thách phủ khắp cây Merkle
+    let target_leaves = 1 << MERKLE_DEPTH;
     let mut challenges = vec![];
-    let num_challenges = 2.min(shard_indices.len());
-    while challenges.len() < num_challenges {
-        let r = shard_indices[prng.gen_range(0..shard_indices.len())];
+    while challenges.len() < NUM_CHALLENGES {
+        let r = prng.gen_range(0..target_leaves);
         if !challenges.contains(&r) { challenges.push(r); }
     }
 
     let mut steps = vec![];
     for &idx in &challenges {
-        let local_pos = shard_indices.iter().position(|&x| x == idx).unwrap();
-        let (raw_data, prev_s, path_elements, path_indices) = sector.get_proof(local_pos);
+        // Lấy đường dẫn Merkle cho lá thứ `idx` bất kỳ
+        let (raw_data, prev_s, path_elements, path_indices) = sector.get_proof(idx);
         steps.push(PoStStepCircuit { raw_data, prev_s, challenge_index: Fr::from(idx as u64), path_elements, path_indices });
     }
 

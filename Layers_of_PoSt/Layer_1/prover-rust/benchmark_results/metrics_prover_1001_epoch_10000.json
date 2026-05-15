@@ -1,15 +1,15 @@
 {
   "prover_id": "1001",
   "epoch": 10000,
-  "primary_constraints": 16764,
+  "primary_constraints": 24980,
   "secondary_constraints": 10347,
-  "setup_time_ms": 34418.396451,
-  "setup_ram_mb": 51.7890625,
-  "sealing_time_ms": 629.167825,
-  "sealing_energy_j": 40.895908625000004,
-  "sealing_ram_mb": 0.625,
-  "proving_time_ms": 26833.935362999997,
-  "proving_energy_j": 1744.2057985949998,
-  "proving_ram_mb": 76.0,
-  "peak_ram_mb": 135.0390625
+  "setup_time_ms": 3362.6710709999998,
+  "setup_ram_mb": 53.77734375,
+  "sealing_time_ms": 434058.641254,
+  "sealing_energy_j": 28213.81168151,
+  "sealing_ram_mb": 784.0703125,
+  "proving_time_ms": 126109.503641,
+  "proving_energy_j": 8197.117736665,
+  "proving_ram_mb": 75.875,
+  "peak_ram_mb": 918.59765625
 }

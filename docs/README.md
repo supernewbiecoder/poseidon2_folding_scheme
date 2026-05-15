@@ -403,16 +403,16 @@ Hệ thống sử dụng 460 thử thách ngẫu nhiên mỗi Epoch. Nếu Prove
 
 ### 2. Mô phỏng với các kích thước Shard thực tế
 
-| Shard Size | Độ sâu | Constraints | Peak RAM | T_honest (s) | T_cheat (s) | An toàn VDF | Phí/Epoch |
+| Shard Size | Độ sâu ($D$) | Constraints | Peak RAM | T_honest (s) | T_cheat (s) | An toàn VDF | Phí/Epoch ($) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 64 B | 29 | 7,500 | 502 MB ✅ | 1209 s | 54896 s | 🛡️ TỐT | $0.00721 |
-| 128 B | 28 | 7,500 | 502 MB ✅ | 941 s | 27784 s | 🛡️ TỐT | $0.00566 |
-| 256 B | 27 | 7,750 | 502 MB ✅ | 809 s | 14230 s | 🛡️ TỐT | $0.00490 |
-| 512 B | 26 | 8,500 | 502 MB ✅ | 749 s | 7459 s | 🛡️ TỐT | $0.00455 |
-| 1024 B | 25 | 10,250 | 503 MB ✅ | 731 s | 4087 s | 🛡️ TỐT | $0.00445 |
-| 2048 B | 24 | 14,000 | 504 MB ✅ | 749 s | 2427 s | 🛡️ TỐT | $0.00455 |
-| **4096 B** | **23** | **21,750** | **506 MB ✅** | **813 s** | **1652 s** | **🛡️ TỐT** | **$0.00492** |
-| 8192 B | 22 | 37,500 | 511 MB ✅ | 955 s | 1375 s | 🛡️ TỐT | $0.00574 |
+| 64 B | 29 | 10,730 | 33271 MB ❌ | 5185 s | 58872 s | 🛡️ TỐT | $0.03018 |
+| 128 B | 28 | 10,730 | 16887 MB ❌ | 2865 s | 29709 s | 🛡️ TỐT | $0.01678 |
+| 256 B | 27 | 10,980 | 8695 MB ❌ | 1708 s | 15129 s | 🛡️ TỐT | $0.01009 |
+| 512 B | 26 | 11,730 | 4599 MB ❌ | 1135 s | 7846 s | 🛡️ TỐT | $0.00678 |
+| 1024 B | 25 | 13,480 | 2552 MB ❌ | 861 s | 4216 s | 🛡️ TỐT | $0.00520 |
+| 2048 B | 24 | 17,230 | 1529 MB ✅ | 751 s | 2429 s | 🛡️ TỐT | $0.00456 |
+| **4096 B** | **23** | **24,980** | **1019 MB ✅** | **750 s** | **1589 s** | **🛡️ TỐT** | **$0.00456** |
+| 8192 B | 22 | 40,730 | 768 MB ✅ | 893 s | 1313 s | 🛡️ TỐT | $0.00539 |
 
 ---
 
@@ -423,20 +423,20 @@ Hệ thống sử dụng 460 thử thách ngẫu nhiên mỗi Epoch. Nếu Prove
 *   **Kích thước Sector**: 32 GB
 *   **Tổng số Shard**: 8,388,608 mảnh (Tương thích SSD 4KB block)
 *   **Độ sâu Merkle Tree**: 23 tầng
-*   **Kích thước mạch ZK (C_step)**: 21,750 R1CS Constraints
-*   **Đỉnh mức RAM tiêu thụ**: 506 MB (An toàn < 2.0GB)
+*   **Kích thước mạch ZK (C_step)**: 24,980 R1CS Constraints
+*   **Đỉnh mức RAM tiêu thụ**: 1019.15 MB (An toàn < 2.0GB)
 
 ### B. Thiết lập cửa sổ Epoch & Bảo mật
-*   **Thời gian Prover trung thực**: 812.1 giây
+*   **Thời gian Prover trung thực**: 750.4 giây
 *   **Biên độ trễ mạng (Buffer)**: 30 giây
-*   **Cửa sổ Epoch tiêu chuẩn**: 843 giây (~ 14.1 phút)
-*   **Thời gian Prover gian lận cần**: 1651.9 giây (Trễ 808.9 giây -> **Bị Slashing**)
+*   **Cửa sổ Epoch tiêu chuẩn**: 780 giây (~ 13 phút)
+*   **Thời gian Prover gian lận cần**: 1589.3 giây giây (Trễ 808.9 giây -> **Bị Slashing**)
 
 ### C. Bài toán kinh tế (Operational Cost)
-*   **Phí điện toán L1 (AWS)**: $0.004698 / Epoch
+*   **Phí điện toán L1 (AWS)**: $0.004336 / Epoch
 *   **Phí xác minh L4 (ETH Gas)**: $0.000225 / Epoch (Đã batch 10,000 proofs)
-*   **Tổng chi phí vận hành**: **$0.00492 / Epoch**
-*   **Chi phí duy trì hàng năm**: **$184.14 / Năm / Node 32GB**
+*   **Tổng chi phí vận hành**: **$0.00456 / Epoch**
+*   **Chi phí duy trì hàng năm**: **$184.30 / Năm / Node 32GB**
 
 ---
 

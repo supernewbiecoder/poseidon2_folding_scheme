@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from tabulate import tabulate
 
 # =====================================================================
-# 1. THÔNG SỐ KỸ THUẬT CỐT LÕI (TECHNICAL PARAMS)
+# 1. THÔNG SỐ KỸ THUẬT CỐT LÕI (TECHNICAL PARAMS - ĐÃ CÂN CHỈNH THỰC NGHIỆM)
 # =====================================================================
 SECTOR_SIZE_GB = 32          
 SECTOR_SIZE_BYTES = SECTOR_SIZE_GB * 1024**3
@@ -18,22 +18,21 @@ BASE_RAM_BYTES = 500 * 1024**2
 RAM_PER_CONSTRAINT = 150        
 TIME_PER_CONSTRAINT_SEC = 0.00002  
 IO_SPEED_MBPS = 500  
-TIME_PER_POSEIDON_HASH_SEC = 0.000001              
+
+# Cập nhật từ Benchmark JSON thực tế:
+TIME_PER_POSEIDON_HASH_SEC = 0.00000083 # Tốc độ Rust siêu nhanh (~0.83 micro-giây/hash)
+CIRCUIT_OVERHEAD = 3230                 # Chi phí biến phụ (AllocatedNum) của Bellpepper
 TIME_PER_SPARTAN_PROVE_SEC = 0.0001 
-SSD_PAGE_SIZE = 4096  # Kích thước Block vật lý của ổ SSD/NVMe (4KB)
+SSD_PAGE_SIZE = 4096                    # Chuẩn Block SSD (4KB)
 
 # =====================================================================
-# 2. THÔNG SỐ TÀI CHÍNH (FINANCIAL PARAMS - USD)
+# 2. THÔNG SỐ TÀI CHÍNH & VDF
 # =====================================================================
 AWS_HOURLY_RATE = 0.0208           
 ETH_PRICE_USD = 3000.0             
 GAS_PRICE_GWEI = 15.0              
 L4_TX_GAS_LIMIT = 50000            
 BATCH_SIZE = 10000                 
-
-# =====================================================================
-# 3. THÔNG SỐ VDF & BẢO MẬT (SECURITY PARAMS)
-# =====================================================================
 RAW_HASH_TIME_SEC_PER_SHARD = 0.00005  
 NETWORK_BUFFER_SEC = 30  
 
@@ -44,27 +43,27 @@ def calc_merkle_depth(b):
     return max(1, math.ceil(math.log2(SECTOR_SIZE_BYTES / b)))
 
 def calc_c_step(b):
-    return C_POS * (b / W) + C_POS * math.log2(SECTOR_SIZE_BYTES / b)
+    # Công thức cốt lõi + Overhead thực nghiệm
+    core_constraints = C_POS * (b / W) + C_POS * math.log2(SECTOR_SIZE_BYTES / b)
+    return core_constraints + CIRCUIT_OVERHEAD
 
-def calc_peak_ram(c_step):
-    return BASE_RAM_BYTES + (c_step * RAM_PER_CONSTRAINT * 2)
+def calc_peak_ram(c_step, b):
+    # 1. RAM cho ZK Nova (Mạch hiện tại + Mạch tích lũy)
+    zk_ram = c_step * RAM_PER_CONSTRAINT * 2
+    # 2. RAM cho việc giữ cây Merkle thô trong bộ nhớ Rust (32 Bytes/Hash)
+    N = SECTOR_SIZE_BYTES / b
+    merkle_tree_ram = N * 32 * 2 
+    return BASE_RAM_BYTES + zk_ram + merkle_tree_ram
 
 def calc_l1_compute_cost(b, c_step):
-    # ---------------------------------------------------------
-    # TÍNH TOÁN HIỆU SUẤT I/O THỰC TẾ CỦA SSD (READ AMPLIFICATION)
-    # ---------------------------------------------------------
     if b < SSD_PAGE_SIZE:
-        # Bị phạt hiệu suất nếu Shard nhỏ hơn Block Size vật lý
         io_efficiency = b / SSD_PAGE_SIZE
         effective_io_speed = IO_SPEED_MBPS * io_efficiency
     else:
-        # Đạt 100% băng thông I/O nếu Shard >= Block Size
         effective_io_speed = IO_SPEED_MBPS
         
-    # 1. Thời gian đọc ổ cứng với tốc độ thực tế
     io_read_time_sec = (SECTOR_SIZE_BYTES / (1024**2)) / effective_io_speed
     
-    # 2. Thời gian CPU băm cây Merkle (Sealing Compute)
     N = SECTOR_SIZE_BYTES / b
     hash_leaves = N * math.ceil(b / W)
     hash_internal = N - 1               
@@ -73,7 +72,6 @@ def calc_l1_compute_cost(b, c_step):
     merkle_compute_time_sec = total_poseidon_hashes * TIME_PER_POSEIDON_HASH_SEC
     sealing_time_sec = io_read_time_sec + merkle_compute_time_sec
     
-    # 3. Thời gian ZK Folding & Spartan
     folding_time_sec = c_step * CHALLENGES * TIME_PER_CONSTRAINT_SEC
     spartan_time_sec = c_step * TIME_PER_SPARTAN_PROVE_SEC
     
@@ -99,7 +97,7 @@ def calc_vdf_security(b, proof_time_sec):
 # =====================================================================
 def run_optimization():
     print("╔══════════════════════════════════════════════════════════════════════════════════════╗")
-    print("║     ENGRAM MEGA OPTIMIZER - TỔNG HỢP KỸ THUẬT, TÀI CHÍNH & AN NINH MẠNG LƯỚI       ║")
+    print("║   ENGRAM MEGA OPTIMIZER - ĐÃ CÂN CHỈNH TỪ BENCHMARK THỰC TẾ (EMPIRICAL TUNED)        ║")
     print("╚══════════════════════════════════════════════════════════════════════════════════════╝")
     
     l4_amortized_cost = calc_l4_gas_cost_per_proof()
@@ -108,14 +106,13 @@ def run_optimization():
     powers_of_2 = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
     table_data = []
     
-    # Biến lưu trữ cấu hình tối ưu nhất
     best_b = None
     min_total_cost = float('inf')
     
     for b in powers_of_2:
         c_step = calc_c_step(b)
         depth = calc_merkle_depth(b)
-        peak_ram_mb = calc_peak_ram(c_step) / (1024**2)
+        peak_ram_mb = calc_peak_ram(c_step, b) / (1024**2)
         
         proof_time_sec, l1_cost = calc_l1_compute_cost(b, c_step)
         total_usd = l1_cost + l4_amortized_cost
@@ -136,19 +133,16 @@ def run_optimization():
             f"${total_usd:.5f}"
         ])
 
-        # TỰ ĐỘNG TÌM ĐIỂM TỐI ƯU NHẤT DỰA TRÊN CHI PHÍ
-        if total_usd < min_total_cost:
+        if total_usd < min_total_cost and peak_ram_mb <= (MAX_RAM_GB * 1024):
             min_total_cost = total_usd
             best_b = b
 
     headers = ["Shard", "Độ sâu", "Constraints", "Peak RAM", "T_honest (s)", "T_cheat (s)", "An toàn VDF", "Phí/Epoch ($)"]
     print(tabulate(table_data, headers=headers, tablefmt="grid"))
 
-    # ========================================================
-    # 2. XUẤT BÁO CÁO TỰ ĐỘNG DỰA TRÊN ĐIỂM TỐI ƯU TÌM ĐƯỢC
-    # ========================================================
+    # --- PHẦN IN CHI TIẾT THEO YÊU CẦU ---
     c_step_opt = calc_c_step(best_b)
-    ram_opt_mb = calc_peak_ram(c_step_opt) / (1024**2)
+    ram_opt_mb = calc_peak_ram(c_step_opt, best_b) / (1024**2)
     proof_time_opt, l1_cost_opt = calc_l1_compute_cost(best_b, c_step_opt)
     total_cost_opt = l1_cost_opt + l4_amortized_cost
     reseal_time, cheat_time, _ = calc_vdf_security(best_b, proof_time_opt)
@@ -158,10 +152,8 @@ def run_optimization():
     print(f"\n[2] 🎯 BÁO CÁO CẤU HÌNH TỐI ƯU ĐỀ XUẤT (SHARD {best_b} BYTES):")
     print(f"  A. THÔNG SỐ KỸ THUẬT (Hardware & Crypto)")
     print(f"     - Kích thước Sector             : {SECTOR_SIZE_GB} GB")
-    print(f"     - Tổng số Shard                 : {int(SECTOR_SIZE_BYTES/best_b):,} mảnh (Tương thích ổ cứng chuẩn {int(best_b/1024)}KB)")
-    print(f"     - Độ sâu Merkle Tree (Depth)    : {calc_merkle_depth(best_b)} tầng")
     print(f"     - Kích thước mạch ZK (C_step)   : {int(c_step_opt):,} R1CS Constraints")
-    print(f"     - Đỉnh mức RAM tiêu thụ         : {ram_opt_mb:.2f} MB (Rất nhẹ, an toàn < {MAX_RAM_GB}GB)")
+    print(f"     - Đỉnh mức RAM tiêu thụ         : {ram_opt_mb:.2f} MB (Bao gồm overhead Merkle Tree)")
 
     print(f"\n  B. THIẾT LẬP CỬA SỔ EPOCH & BẢO MẬT (Security Window)")
     print(f"     - Thời gian Prover trung thực   : {proof_time_opt:.1f} giây")
@@ -210,9 +202,8 @@ def plot_optimization_curve(best_b):
     fig.tight_layout()
     plt.grid(True, which="both", ls="--", alpha=0.5)
     
-    output_filename = "Engram_Ultimate_Optimization.png"
-    plt.savefig(output_filename, dpi=300, bbox_inches='tight')
-    print(f"\n    📊 Đã xuất biểu đồ tổng hợp vào file: {output_filename}")
+    plt.savefig("Engram_Ultimate_Optimization.png", dpi=300, bbox_inches='tight')
+    print(f"\n    📊 Đã xuất biểu đồ tổng hợp!")
 
 if __name__ == "__main__":
     run_optimization()
