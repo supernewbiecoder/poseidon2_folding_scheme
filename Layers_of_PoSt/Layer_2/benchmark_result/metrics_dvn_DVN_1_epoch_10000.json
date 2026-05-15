@@ -1,0 +1,24 @@
+{
+  "dvn_id": "DVN_1",
+  "epoch": 10000,
+  "assumed_cpu_wattage": 65.0,
+  "setup_time_ms": 34037.833335999996,
+  "setup_ram_mb": 63.375,
+  "total_verify_time_ms": 4627.524217,
+  "total_energy_joules": 300.789074105,
+  "peak_ram_mb": 84.6875,
+  "provers_metrics": [
+    {
+      "prover_id": "1002",
+      "success": true,
+      "deserialize_time_ms": 1.503403,
+      "deserialize_energy_j": 0.097721195,
+      "deserialize_ram_mb": 0.0,
+      "verify_math_time_ms": 4624.010284999999,
+      "verify_math_energy_j": 300.560668525,
+      "verify_math_ram_mb": 15.3125,
+      "total_prover_time_ms": 4627.520641,
+      "total_prover_energy_j": 300.788853885
+    }
+  ]
+}

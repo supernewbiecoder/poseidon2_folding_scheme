@@ -5,11 +5,10 @@
 Hệ thống được chia thành 6 layers:
 ```
 1. Prover (Storage node): Thực hiện thuật toán VDF (chứng minh thời gian lưu trữ) + tạo bằng chứng chứng minh lưu trữ dựa vào (folding scheme + Spartan) và sử dụng poseidon2 để tối ưu hóa cho RAM của máy tính
-2. DVN (Delegated Verification Network): Mạng xác minh được ủy quyền với cơ chế đồng thuận ủy ban t-of-n
-3. FROST (Threshold Schnorr Signatures): Chữ ký Schnorr ngưỡng chịu lỗi Byzantine
-4. DA (Data Availability Layer): Khả dụng dữ liệu với lưu trữ tạm thời và thời gian giải quyết tranh chấp
-5. FISHERMEN (Watcher Nodes): Mạng lưới phát hiện gian lận ngoài chuỗi độc lập
-6. Lớp 6 (Bitcoin L1): Lớp thanh toán với xác thực OP_CHECKSIG
+2. Layer 2: Lớp thuật toán xác minh bằng chứng
+3. Lớp 3: Lớp các node được ủy quyền xác minh
+4. Lớp 4: Lớp smart contract optimistic lên ethereum
+5. Lớp 5: Bitcoin L1: Lớp lưu trữ meta data lâu dài
 ```
 
 Note: A separate genesis setup (Layer 0) lives under `Layers_of_PoSt/Layer_0_genesis_setup` and simulates generation and distribution of public parameters (verifier keys / public params). Layers 1 and 2 read those parameters produced by Layer 0.
@@ -123,207 +122,350 @@ $t_{spartan}$: Thời gian Spartan nén trạng thái gập cuối cùng thành 
 $$Memory_{prover} \approx Memory_{OS} + Memory_{Nova}(m_{aug})$$
 $Memory_{prover} \approx Constant$: Với $m_{aug} \approx 3,300$, lượng RAM tiêu thụ thực tế cho tiến trình mật mã luôn duy trì dưới 2 GB, bất kể Prover đang lưu trữ 100 GB hay 10 TB dữ liệu.
 
-## Lớp 2: Mạng lưới Xác minh Phi tập trung / DVN - Decentralized Verifier Network
-### 1. Tổng quan
-1. Vai trò: Mạng lưới Bitcoin cực kỳ bảo mật nhưng lại rất chậm (10 phút/block) và chi phí lưu trữ dữ liệu On-chain đắt đỏ. Nếu hàng nghìn Prover cứ mỗi giờ lại gửi thẳng một file bằng chứng lên Bitcoin, mạng lưới sẽ tắc nghẽn và phí giao dịch sẽ "đốt sạch" lợi nhuận của thợ đào.
-Vì vậy, Layer 2 (DVN) ra đời như một lớp trung gian (Middleware) đóng vai trò:
-    - Chấm bài siêu tốc: Xác minh toán học của hàng nghìn bằng chứng ZK-SNARK chỉ trong vài phần nghìn giây.
-    - Gom cụm (Aggregation): Gom hàng nghìn kết quả kiểm chứng thành một xác nhận duy nhất.
-    - Chốt sổ (Settlement): Gửi kết quả cuối cùng lên L1 (Bitcoin) một cách cực kỳ rẻ mẻ và an toàn.
-2. Đầu vào của Layer2: Layer 2 sẽ ngồi chờ và tiếp nhận kết quả từ Layer 1 nộp lên. Các dữ liệu này bao gồm:
-    - File bằng chứng: compressed_proof.bin (kết quả nén của thuật toán Spartan).
-    - Metadata: File input.json (chứa Prover ID, Epoch, Bitcoin Seed, Root cũ $z_0$, Root mới $z_i$).
-3. Quy trình vận hành cốt lõi: Khi nhận được kết quả từ prover, các Node thuộc Layer 2 sẽ thực hiện các bước sau:
-    - Kiểm tra metadata: node DVN sẽ kiểm tra logic cơ bản
-        - Bằng chứng này nộp có đúng hạn (Epoch) không?
-        - Hạt giống (Bitcoin Hash) Prover dùng có đúng với Hash L1 hiện tại không?
-        - Prover có tự ý kiểm tra sai Shard so với yêu cầu của Seed không?
-    - Kiểm chứng Toán học Không Cần Tin Cậy (Trustless Verification)
-        - DVN nạp bộ Tham số Công khai (Public Parameters - PP) chuẩn mà mạng lưới đã thống nhất từ trước.
-        - Chạy hàm verify() của Spartan lên file compressed_proof.bin.
-    - Đồng thuận và Ký đa chữ ký (Consensus & Threshold Signature)
+## Lớp 2: Lớp thuật toán xác minh bằng chứng
 
-## Chứng thực (Attestation) và Chữ kí(Signatures)
+**Mục tiêu và vai trò**: Layer 2 không phải là một thực thể vật lý (node) mà là tập hợp các logic xác minh mật mã học. Nhiệm vụ cốt lõi là trả lời câu hỏi: "Bằng chứng này có chứng minh được Prover đang lưu trữ dữ liệu chính xác trong khoảng thời gian quy định hay không?"
+- Tính tinh gọn (Succinctness): Thời gian xác minh phải cực nhanh ($O(\log N)$ hoặc $O(1)$) dù dữ liệu gốc có kích thước Terabytes.
+- Tính phi tập trung: Thuật toán được thiết kế để bất kỳ node nào ở Layer 3 (DVN) cũng có thể chạy và đưa ra kết quả đồng nhất.
 
-**Chứng thực** là cam kết có chữ ký ràng buộc bằng chứng đã được xác minh với siêu dữ liệu của nó.
+**Kiến trúc Thuật toán Cốt lõi**: 
+- Spartan IPA Verifier (Xác minh Inner Product Argument): Thay vì kiểm tra hàng triệu ràng buộc R1CS, Layer 2 sử dụng Polynomial Commitments (Cam kết Đa thức) kết hợp với giao thức Inner Product Argument (IPA) của Spartan
+    - Thuật toán lấy Verifier Key ($vk$) làm "đáp án chuẩn".
+    - Nó chạy giao thức Sum-check (Kiểm tra tổng) thu gọn để chứng minh rằng: Prover ở Layer 1 thực sự biết một ma trận thỏa mãn phương trình R1CS mà không cần Prover phải gửi ma trận đó qua mạng.
+- Public IO Integrity (Bảo vệ Tính toàn vẹn Trạng thái): Ngay cả khi bằng chứng Spartan đúng về mặt toán học, Layer 2 vẫn phải kiểm tra xem bằng chứng đó có dành cho đúng file và đúng Epoch hay không.
+Nó thực hiện đối soát 2 biến Public Inputs:
+    - Trạng thái đầu ($z_0$): Chứa ID của Prover và Mã băm của Sector ban đầu.
+    - Trạng thái cuối ($z_i$): Chứa Merkle Root của dữ liệu sau khi bị băm.
+Nếu thuật toán Spartan trả về $z_{computed}$ khớp hoàn toàn với $z_{expected}$, bằng chứng mới chính thức hợp lệ.
 
-- **Attestation** = signed proof metadata, typically `z0`, `zi`, `spartan_proof_hash`, and `epoch`
-- **FROST signature** = threshold Schnorr signature used in the full 6-layer stack under `layers/orchestrator.py`
+**Luồng Thực thi của Thuật toán (Verification Pipeline)**: 
+1. Hash Check (Bảo vệ I/O): Tính mã băm SHA-256 của toàn bộ file .bin và so sánh với spartan_proof_hash trong file JSON. Ngăn chặn việc file bị tráo đổi trong quá trình truyền tải.
+2. Setup (Nạp VK): Đọc file vk.bin từ Genesis Setup (Layer 0) vào RAM. Đây là tham số mạng lưới không thể giả mạo.
+3. Deserialize: Chuyển đổi mảng byte của bằng chứng thành cấu trúc CompressedSNARK trong Rust.
+4. The Math Step (proof.verify): Đưa bằng chứng, số bước đã gập (num_steps), và trạng thái $z_0$ vào hàm xác minh. Nếu hàm trả về $z_i$ hợp lệ, chứng tỏ toàn bộ chuỗi tính toán Poseidon2 tại Layer 1 là chính xác tuyệt đối.
 
-The full stack signing layer is **FROST**.
+## Lớp 3: Lớp các node được ủy quyền xác minh
 
-## 🚀 Quick Start
+**Mục tiêu và Vai trò**: Layer 3 (Sequencer/DVN) giải quyết bài toán thắt cổ chai về phí giao dịch (Gas fee) trên blockchain. Nếu hàng nghìn Prover (Layer 1) trực tiếp gửi bằng chứng lên Ethereum, mạng lưới sẽ tắc nghẽn và chi phí sẽ khổng lồ.
+Nhiệm vụ cốt lõi: 
+- Gom cụm (Batching): Tập hợp hàng ngàn bằng chứng ZK từ các Prover khác nhau thành một "Batch" duy nhất.
+- Xác minh nội bộ: Gọi thuật toán Layer 2 để lọc bỏ các bằng chứng sai lệch trước khi đóng gói.
+- Cam kết trạng thái (State Commitment): Tạo ra một Batch Merkle Root duy nhất đại diện cho toàn bộ Epoch và gửi lên Layer 4.
 
-### Prerequisites
+**Kiến trúc và Thành phần cốt lõi**
+Layer 3 không phải là môi trường Smart Contract mà là các máy chủ chạy Off-chain (sử dụng Python/Node.js/Go). Một Node Layer 3 điển hình bao gồm các thành phần:
+1. Mempool (Hồ chứa chờ)
+    - Khi Prover (Layer 1) tạo xong bằng chứng (.bin và .json), nó sẽ gửi dữ liệu này vào Mempool của Sequencer được chỉ định cho Epoch đó.
+    - Các bằng chứng nằm trong Mempool có trạng thái "Chờ xác minh" (PENDING).
+2. Verifier Bridge (Cầu nối Layer 2)
+    - Sequencer không tự mình biết toán học ZK. Nó đóng vai trò "Trạm gọi lệnh", khởi chạy tiến trình Rust của Layer 2 thông qua Subprocess (hoặc RPC/API trong thực tế).
+    - Luồng chạy: Đọc file JSON từ Mempool $\rightarrow$ Gọi lệnh cargo run của Layer 2 $\rightarrow$ Nhận lại kết quả nhị phân (PASS/FAIL).
+3. Batch Merkle Tree (Cây tổng hợp)
+    - Những bằng chứng nào được Layer 2 đánh giá là PASS, Sequencer sẽ lấy spartan_proof_hash của chúng để xây dựng một cây Merkle tổng hợp (Batch Merkle Tree).
+    - Đầu ra: Một mã băm duy nhất (Batch Merkle Root). Việc này giúp nén hàng nghìn trạng thái thành 32 bytes dữ liệu.
 
-- **Rust** 1.70+ with Cargo
-- **Circom** 2.1.5
-- **SnarkJS** 0.6.0+
-- **Node.js** 14+
-- **Python** 3.8+
-- **WSL** (Windows) or Linux (macOS/Linux)
+**Quy trình Đóng gói và Đệ trình (Submit Pipeline)**
+Quy trình hoạt động của Sequencer trong 1 Epoch được mô tả qua các bước sau:
 
-### Installation
+1. Lắng nghe & Thu thập: Thu thập bằng chứng từ các Prover trong một khoảng thời gian cố định.
 
+2. Lọc dữ liệu rác: Xóa các bằng chứng không đúng định dạng hoặc sai Epoch.
+
+3. Xác minh song song: Gọi Layer 2 xác minh hàng loạt các bằng chứng hợp lệ.
+
+4. Xây dựng Merkle Root: Tính toán Batch Merkle Root cho các bằng chứng PASS.
+
+5. Lưu trữ Data Availability (DA): (Mô phỏng) Đẩy toàn bộ chi tiết báo cáo lên một mạng lưu trữ phi tập trung (như IPFS/Arweave) để mọi người có thể kiểm tra lại. Lấy về một mã tham chiếu (CID).
+
+6. Ký số ECDSA: Sequencer sử dụng Private Key (định dạng SECP256k1 của Ethereum) để ký lên gói dữ liệu (Payload).
+
+7. Đệ trình lên Layer 4: Gửi giao dịch chứa (Epoch, Batch Root, CID, Chữ ký) vào Inbox của Smart Contract trên Layer 4.
+
+**Rủi ro và Cơ chế chống gian lận**
+Vì Layer 3 là Off-chain và do một cá nhân/tổ chức điều hành, họ có thể gian lận bằng cách:
+
+- Đưa bằng chứng FAIL thành PASS vào Batch.
+
+- Bỏ sót cố ý (Censorship) bằng chứng của một Prover nào đó.
+
+Giải pháp của Engram (Kết nối với Layer 4):
+Sequencer không có quyền chốt sổ cuối cùng. Nó chỉ được phép đệ trình một "Trạng thái Lạc quan" (Optimistic State) lên Layer 4 và phải đặt cọc tiền (Stake). Nếu ai đó phát hiện Sequencer gian lận (bằng cách kiểm tra lại dữ liệu trên DA Layer), họ có thể cung cấp Bằng chứng Gian lận (Fraud Proof) tại Layer 4, khiến Sequencer bị mất trắng tiền cọc (Slashing).
+
+## Lớp 4: Optimistic Smart Contract Layer
+**Mục tiêu và Vai trò**: Layer 4 được triển khai dưới dạng một Smart Contract trên mạng lưới Ethereum. Nếu Layer 1, 2, 3 thiên về tính toán mật mã và gom cụm dữ liệu off-chain, thì Layer 4 tập trung hoàn toàn vào Bảo mật Kinh tế (Crypto-economic Security) và Phân xử tranh chấp (Dispute Resolution).
+Nhiệm vụ cốt lõi:
+- Lưu trữ trạng thái tạm thời: Nhận các Batch Merkle Root từ Layer 3 (Sequencer) và lưu trữ chúng.
+
+- Tòa án phân xử: Cung cấp một khoảng thời gian (Challenge Window) để bất kỳ ai cũng có thể khiếu nại nếu phát hiện Sequencer gian lận.
+
+- Trừng phạt (Slashing): Tịch thu tiền cọc (Stake) của các node làm sai.
+
+- Chốt sổ (Finalization): Xác nhận trạng thái cuối cùng (Immutable) để chuẩn bị đẩy lên Bitcoin (Layer 5).
+
+**Cơ chế Hoạt động "Lạc quan" (Optimistic Rollup)**: Layer 4 không trực tiếp chạy thuật toán xác minh ZK của Layer 2 vì phí Gas trên Ethereum để chạy các phép toán hình học đại số rất đắt đỏ. Thay vào đó, nó sử dụng cơ chế Optimistic (Lạc quan).
+
+1. Giả định tin tưởng (Trust Assumption)
+    - Khi một Sequencer (Layer 3) đệ trình một Batch Root lên Layer 4 kèm theo một lượng tiền cọc (VD: 10 ETH), Smart Contract sẽ mặc định tin rằng dữ liệu này là đúng. 
+    - Bản tin này sẽ được đưa vào "Phòng chờ" (Inbox) với trạng thái PENDING_CHALLENGE.
+2. Cửa sổ Thử thách (Challenge Window)
+ - Đây là khoảng thời gian ân hạn (trong thực tế thường là 7 ngày, trong code mô phỏng là 60 giây).
+
+ - Trong suốt thời gian này, dữ liệu chưa được coi là chính thức. Bất kỳ node nào đóng vai trò là "Người quan sát" (Challenger) cũng có thể tải dữ liệu từ Data Availability (DA) về, tự chạy lại Layer 2 để kiểm tra.
+
+ 3. Cơ chế Trừng phạt và Chốt sổ (Slashing & Settlement)
+ Đây là cơ chế tạo ra động lực tài chính ép các Sequencer phải trung thực tuyệt đối.
+
+**Kịch bản 1: Có gian lận (Fraud Detected)**
+1. Phát hiện: Nếu Challenger phát hiện Sequencer gửi lên bằng chứng sai (Ví dụ: báo PASS cho một Prover thực chất đã FAIL).
+
+2. Thách thức (Challenge): Challenger gửi một Bằng chứng gian lận (Fraud Proof) lên Layer 4 Smart Contract.
+
+3. Phân xử: Lúc này, Layer 4 mới thực sự tốn Gas để chạy lại phép toán ZK (hoặc một phần của phép toán) nhằm xác minh lời tố cáo.
+
+4. Trừng phạt (Slashing): Nếu tố cáo đúng, toàn bộ 10 ETH tiền cọc của Sequencer gian lận sẽ bị tịch thu (Burn một phần và thưởng cho Challenger một phần). Batch Root độc hại sẽ bị xóa bỏ hoàn toàn khỏi mạng lưới.
+
+**Kịch bản 2: Không có gian lận (Happy Path)**
+1. Hết thời gian: Cửa sổ thử thách kết thúc mà không có bất kỳ khiếu nại nào xảy ra.
+
+2. Finalization: Smart Contract chuyển trạng thái của Batch Root đó từ PENDING sang FINALIZED.
+
+3. Sẵn sàng cho Layer 5: Dữ liệu lúc này đã trở thành Sự thật bất biến (Immutable Truth) trên Ethereum, sẵn sàng để Relayer Bot nhặt lấy và khắc vĩnh viễn lên Bitcoin.
+
+**Tại sao lại đặt Layer 4 trên Ethereum thay vì Bitcoin?**
+- Bitcoin Script (Lớp 1 của Bitcoin) không có khả năng chạy các hàm Smart Contract phức tạp, đặc biệt là việc viết logic phân xử Fraud Proof và quản lý tiền cọc (Staking/Slashing). Ethereum sinh ra để làm việc này.
+
+## Phân tích chi phí và tối ưu hóa
+# 📐 Hệ Thống Công Thức Chi Phí Đa Tầng (Multi-Layer Cost Analysis)
+
+Tài liệu này chi tiết hóa các biến số và hệ thức toán học xác định chi phí vận hành, tài nguyên phần cứng và hiệu suất của hệ thống từ Layer 0 đến Layer 4.
+
+---
+
+## Ⅰ. TẬP HỢP CÁC BIẾN SỐ TOÀN CỤC (GLOBAL VARIABLES)
+
+### 1. Biến số Dữ liệu & Cấu trúc
+| Biến | Ý nghĩa | Đơn vị | Công thức |
+| :--- | :--- | :--- | :--- |
+| $S$ | Kích thước tổng của 1 Sector | Bytes | - |
+| $b$ | Kích thước của 1 Shard | Bytes | - |
+| $N$ | Số lượng Shard trong 1 Sector | - | $N = \frac{S}{b}$ |
+| $D$ | Độ sâu của cây Merkle | - | $D = \lceil \log_2(N) \rceil$ |
+
+### 2. Biến số ZK & Mật mã học
+*   **$W$**: Dung lượng tối đa Poseidon2 xử lý trong 1 vòng (32 hoặc 64 bytes).
+*   **$C_{pos}$**: Số lượng R1CS Constraints cho 1 lần chạy hàm Poseidon2 ($\approx 250 - 300$).
+*   **$c$**: Số lượng thử thách (Challenges) trong 1 Epoch.
+*   **$K$**: Số lượng Prover gửi bằng chứng đồng thời.
+
+### 3. Biến số Lõi (The Bottleneck Variable)
+Đây là biến số quyết định toàn bộ yêu cầu về RAM và thời gian xử lý:
+$$C_{step}(b) = C_{pos} \cdot \underbrace{\left\lceil \frac{b}{W} \right\rceil}_{\text{Băm dữ liệu Shard}} + C_{pos} \cdot \underbrace{\lceil \log_2\left(\frac{S}{b}\right) \rceil}_{\text{Băm Merkle Path}}$$
+
+---
+
+## Ⅱ. HỆ CÔNG THỨC CHI PHÍ THEO TỪNG LAYER
+
+### 🟦 LAYER 0: GENESIS SETUP (Khởi tạo)
+*Yêu cầu phần cứng khắt khe nhất để tạo tham số.*
+*   **Thời gian Setup:** $T_{L0} = O(C_{step} \cdot \log(C_{step}))$
+*   **RAM Đỉnh:** $RAM_{L0\_Peak} = \lambda_{setup} \cdot C_{step}$
+    > *Lưu ý: Thường yêu cầu 128GB - 256GB RAM nếu $C_{step}$ lớn.*
+
+### 🟧 LAYER 1: PROVER (Nút thắt cổ chai Compute)
+*Bao gồm Sealing (Merkle), Folding (Nova), và Compression (Spartan).*
+*   **Thời gian tổng ($T_{L1}$):**
+    $$T_{L1} = \underbrace{T_{hash} \cdot \left( \frac{S}{W} + 2\frac{S}{b} \right)}_{\text{Sealing}} + \underbrace{c \cdot T_{fold}(C_{step})}_{\text{Nova Folding}} + \underbrace{T_{spartan}(C_{step})}_{\text{Spartan Prove}}$$
+*   **RAM Đỉnh:** $RAM_{L1\_Peak} = RAM_{load\_keys}(|pp| + |pk|) + \lambda_{fold} \cdot C_{step}$
+
+### 🟩 LAYER 2: VERIFIER / DVN (Xác minh)
+*Tính chất Succinct (ngắn gọn), thắt cổ chai nằm ở I/O.*
+*   **Thời gian xác minh:** $T_{L2} = T_{deser}(|Proof_{bin}|) + O(\log(C_{step})) \cdot T_{pairing}$
+*   **RAM Đỉnh:** $RAM_{L2\_Peak} = |VK_{bin}| + \lambda_{deser} \cdot |Proof_{bin}|$
+
+### 🟨 LAYER 3: SEQUENCER (Điều phối)
+*Xử lý gom cụm off-chain.*
+*   **Thời gian Batching:** $T_{L3} = K \cdot T_{L2} + (2K - 1) \cdot T_{sha256}$
+*   **Mempool Storage:** $Storage_{L3} = K \cdot (|Proof_{bin}| + |Metadata_{json}|)$
+
+### 🟥 LAYER 4: OPTIMISTIC SMART CONTRACT (Ethereum L1)
+1.  **Chi phí Lạc quan (Happy Path):**
+    $$Gas_{L4\_Happy} = Gas_{base} + Gas_{calldata}(|BatchRoot| + |DA\_Ref|)$$
+2.  **Chi phí Tranh chấp (Dispute Resolution):**
+    $$Gas_{L4\_Dispute} = Gas_{base} + Gas_{Spartan\_Verify\_Onchain}(C_{step})$$
+
+---
+
+### 💡 Chú giải ký hiệu
+*   $\lambda$: Hệ số tải tài nguyên của thư viện (Rust/C++ implementation).
+*   $| \cdot |$: Kích thước tệp tin/dữ liệu.
+*   $T_{hash} / T_{pairing}$: Thời gian xử lý đơn vị của thuật toán băm/ghép cặp.
+
+⚙️ Lựa chọn Tham số & Tối ưu hóa (Parameter Selection & Optimization)
+## Ⅲ. PHÂN TÍCH ĐIỂM TỐI ƯU (THE TRADE-OFF)
+
+Hệ thống đối mặt với sự đánh đổi chiến lược giữa **Kích thước Shard ($b$)** và **Độ sâu cây Merkle ($D$)**:
+
+*   **Shard quá nhỏ (64 Bytes):** 
+    *   *Ưu điểm:* Tối ưu số lượng ràng buộc ($C_{step}$ thấp).
+    *   *Nhược điểm:* Tạo ra hàng triệu file nhỏ, gây thắt cổ chai I/O cực nặng cho SSD (Disk Thrashing).
+*   **Shard quá lớn (16384 Bytes):** 
+    *   *Ưu điểm:* Giảm độ sâu cây Merkle ($D$).
+    *   *Nhược điểm:* Làm mạch ZK phình to, dễ vượt ngưỡng RAM vật lý cho phép.
+
+> **Quyết định thiết kế:** Hệ thống lựa chọn kích thước Shard **4096 Bytes (4 KB)** để khớp hoàn hảo với kích thước vật lý của một **Block trên SSD/NVMe**, giúp tối ưu hóa tốc độ đọc dữ liệu thô và giảm thiểu độ trễ I/O.
+
+---
+
+---
+
+## ⚙️ IV. CẤU HÌNH HỆ THỐNG TỐI ƯU (FINAL CONFIGURATION)
+
+Dựa trên các phân tích toán học và thực nghiệm từ công cụ `optimize.py`, hệ thống Engram được thiết lập với bộ tham số **"Sweet Spot"**. Cấu hình này được thiết kế để khai thác tối đa hiệu năng phần cứng trong giới hạn khắt khe **2GB RAM** và tối ưu hóa cho **SSD NVMe**.
+
+| Tham số | Giá trị | Ý nghĩa & Mục tiêu kỹ thuật |
+| :--- | :--- | :--- |
+| **Dung lượng Sector ($S$)** | 32 GB | Quy mô lưu trữ lớn cho mỗi node thực tế. |
+| **Kích thước Shard ($b$)** | 4096 Bytes | **SSD Alignment**: Khớp hoàn hảo với Block 4KB, tối ưu I/O. |
+| **Độ sâu Merkle ($D$)** | 23 Tầng | Cân bằng thời gian băm Merkle Path và kích thước mạch ZK. |
+| **Số thử thách ($c$)** | 460 Lần | Tăng cường bảo mật, phát hiện gian lận tinh vi nhất. |
+| **Ràng buộc mạch ($C_{step}$)** | ~21,750 | Số lượng R1CS tối ưu cho mỗi bước gập (Folding). |
+| **RAM Đỉnh điểm (Peak)** | ~1.93 GB | Vắt kiệt tài nguyên trong ngưỡng an toàn phần cứng (8GB RAM). |
+
+---
+
+## 🛡️ V. ĐÁNH GIÁ ĐỘ AN TOÀN & BẢO MẬT MẬT MÃ
+
+### 1. Xác suất phát hiện gian lận
+Hệ thống sử dụng $c = 460$ thử thách ngẫu nhiên mỗi Epoch. Nếu Prover xóa tỷ lệ $f = 1\%$ dữ liệu, xác suất phát hiện ($P_{detect}$) là:
+
+$$P_{detect} = 1 - (1 - f)^c = 1 - (1 - 0.01)^{460} \approx 99.02\%$$
+
+> **Phân tích:** Rủi ro bị phát hiện >99% tạo ra rào cản kinh tế cực lớn, khiến việc gian lận không khả thi so với hình phạt **Slashing** (mất tiền cọc).
+
+### 2. Mô phỏng với các kích thước Shard thực tế
+
+| Shard Size | Độ sâu ($D$) | Constraints | Peak RAM | T_honest (s) | T_cheat (s) | An toàn VDF | Phí/Epoch ($) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 64 B | 29 | 7,500 | 502 MB ✅ | 1209 s | 54896 s | 🛡️ TỐT | $0.00721 |
+| 128 B | 28 | 7,500 | 502 MB ✅ | 941 s | 27784 s | 🛡️ TỐT | $0.00566 |
+| 256 B | 27 | 7,750 | 502 MB ✅ | 809 s | 14230 s | 🛡️ TỐT | $0.00490 |
+| 512 B | 26 | 8,500 | 502 MB ✅ | 749 s | 7459 s | 🛡️ TỐT | $0.00455 |
+| 1024 B | 25 | 10,250 | 503 MB ✅ | 731 s | 4087 s | 🛡️ TỐT | $0.00445 |
+| 2048 B | 24 | 14,000 | 504 MB ✅ | 749 s | 2427 s | 🛡️ TỐT | $0.00455 |
+| **4096 B** | **23** | **21,750** | **506 MB ✅** | **813 s** | **1652 s** | **🛡️ TỐT** | **$0.00492** |
+| 8192 B | 22 | 37,500 | 511 MB ✅ | 955 s | 1375 s | 🛡️ TỐT | $0.00574 |
+
+---
+
+
+## 🎯 BÁO CÁO CẤU HÌNH TỐI ƯU ĐỀ XUẤT (SHARD 4096 BYTES)
+
+### A. Thông số kỹ thuật (Hardware & Crypto)
+*   **Kích thước Sector**: 32 GB
+*   **Tổng số Shard**: 8,388,608 mảnh (Tương thích SSD 4KB block)
+*   **Độ sâu Merkle Tree**: 23 tầng
+*   **Kích thước mạch ZK ($C_{step}$)**: 21,750 R1CS Constraints
+*   **Đỉnh mức RAM tiêu thụ**: 506 MB (An toàn < 2.0GB)
+
+### B. Thiết lập cửa sổ Epoch & Bảo mật
+*   **Thời gian Prover trung thực**: 812.1 giây
+*   **Biên độ trễ mạng (Buffer)**: 30 giây
+*   **Cửa sổ Epoch tiêu chuẩn**: 843 giây (~ 14.1 phút)
+*   **Thời gian Prover gian lận cần**: 1651.9 giây (Trễ 808.9 giây -> **Bị Slashing**)
+
+### C. Bài toán kinh tế (Operational Cost)
+*   **Phí điện toán L1 (AWS)**: $0.004698 / Epoch
+*   **Phí xác minh L4 (ETH Gas)**: $0.000225 / Epoch (Đã batch 10,000 proofs)
+*   **Tổng chi phí vận hành**: **$0.00492 / Epoch**
+*   **Chi phí duy trì hàng năm**: **$184.14 / Năm / Node 32GB**
+
+---
+
+## Ⅰ. YÊU CẦU HỆ THỐNG (SYSTEM REQUIREMENTS)
+
+*   **Hệ điều hành**: Linux (Ubuntu 22.04+) hoặc Windows với WSL2 (Khuyến nghị).
+*   **Ngôn ngữ lập trình**:
+    *   **Rust**: Phiên bản 1.75 trở lên (dùng cho Layer 0, 1, 2).
+    *   **Python**: Phiên bản 3.10 trở lên (dùng cho Layer 3, 4).
+*   **Phần cứng tối thiểu**: 8GB RAM (Tiêu thụ thực tế ~2GB), CPU Intel i5/Ryzen 5 trở lên.
+
+---
+
+## Ⅱ. CÀI ĐẶT MÔI TRƯỜNG (INSTALLATION)
+
+### 1. Cài đặt Rust & Dependencies
 ```bash
-# Clone and setup
-git clone <repo>
-cd poseidon2_folding_scheme
+# Cài đặt Rust
+curl --proto '=https' --tlsv1.2 -sSf [https://sh.rustup.rs](https://sh.rustup.rs) | sh
+source $HOME/.cargo/env
 
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Pre-check Rust compilation
-cd prover-rust && cargo check && cd ..
-
-# Pre-compile Circom circuits (optional, auto-compiled on first run)
-cd circuits-circom && circom spartan_wrapper.circom --r1cs && cd ..
-```
-
-### Run Full Pipeline
-
-```bash
-# Start orchestrated pipeline (interactive)
-./run_pipeline.sh
-# (alias of ./run_full_protocol_pipeline.sh)
-
-# Enter shard count, challenge count, and optional directory when prompted:
-# > 4
-# > 4
-# > C:\path\to\shards
-```
-
-**Output Sample:**
-```
-[LAYER 1] PROVER: Spartan Compression (Nova + Poseidon2)
-[LAYERS 2-6] FULL STACK: DVN -> FROST -> DA -> Fishermen -> L1
-LAYER 3: FROST -> Threshold Schnorr Signature
-✅ FROST aggregated signature: 64 bytes
-
-LAYER 6: Bitcoin L1 -> On-Chain Settlement
-✅ Full stack pipeline finished successfully
-
-⚡ ENERGY REPORT
-==========================================
-Nova Init                       0.42 J
-Nova Folding                    5.18 J
-Spartan Setup                   1.90 J
-Spartan Prove                   9.95 J
-Spartan Verify                  0.63 J
-Export + Attestation            0.12 J
-DVN Consensus + FROST           0.31 J
-Fishermen + DA + L1             0.44 J
-
-📊 BENCHMARK RESULTS
-==========================================
-BUILD RUST                      4.2 sec
-RUNTIME ONLY (Prove + Verify)  14.5 sec
-FULL STACK (L1 SETTLED)        16.1 sec
-FROST SIGN                      0.02 sec
-SETTLEMENT CONFIRM              0.7 sec
-```
-
----
-
-## 🔐 Trust Model
-
-| Attack | Blocked By | Mechanism |
-|--------|-----------|-----------|
-| **False Proof** | Layer 1 Spartan verification | Invalid proof won't pass native field check |
-| **Fake Attestation (Full Stack)** | Layer 3 FROST threshold signing | Attacker must control threshold committee shares |
-| **Proof Tampering** | Layer 2 hash binding | Altered proof breaks signature |
-| **Commitment Swapping** | Layer 4 Circom constraints | Commitment hardcoded in circuit |
-| **Replay** | Epoch + Domain separation | Each proof tied to specific epoch/domain |
-
----
-
-## 📊 Performance Metrics
-
-Full-stack benchmark (DVN + FROST + DA + Fishermen + L1) on Ubuntu 22.04, Ryzen 5950X:
+# Cài đặt các thư viện bổ trợ (Linux)
+sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev
 
 ```
-Stage                          Time        Proof Size
-───────────────────────────────────────────────────────
-Spartan Prove (cold)          7.3 sec     128 KB (compressed)
-Spartan Verify (native)       0.1 sec     —
-DVN Consensus                 0.1 sec     —
-FROST Threshold Sign          0.02 sec    64 bytes
-DA + Fishermen + L1           0.7 sec     —
-───────────────────────────────────────────────────────
-TOTAL (cold)                 ~16 sec      128 KB (compressed)
-TOTAL (warm)                 ~8 sec       128 KB (compressed)
+### 2. Cài đặt Python & Libraries
+```
+pip install numpy scipy matplotlib tabulate ecdsa configparser
+```
+## III. Cấu hình Toàn cục (Configuration)
+Trước khi khởi chạy, ta cần đảm bảo các tệp cấu hình mạng lưới được thiết lập đúng:
+
+1. **CURRENT_EPOCH_IN_BITCOIN.conf**: Tệp này nằm ở thư mục gốc, quy định Epoch hiện tại và Bitcoin Hash để làm tham số ngẫu nhiên cho Challenges.
+
+2. **Biến môi trường**: Một số Layer yêu cầu ID để định danh thư mục đầu ra.
+```
+export ENGRAM_PROVER_ID=1003  # ID cho Prover
+export ENGRAM_ROOT_DIR=$(pwd) # Đường dẫn gốc của project
+```
+## IV. Quy trình Vận hành Chi tiết
+**Bước 1**: Layer 0 - Genesis Setup (Khởi tạo Mạng lưới)
+Đây là bước tạo ra các tham số công khai (Public Parameters) mà tất cả các lớp khác sẽ sử dụng.
+```
+cd Layer_0_genesis_setup
+cargo run --release
+```
+**Kết quả**: Các tệp pp.bin, pk.bin, vk.bin sẽ xuất hiện trong thư mục network_params.
+
+**Bước 2**: Layer 1 - Prover Node (Tạo Bằng chứng)
+Prover thực hiện "Sealing" dữ liệu và tạo bằng chứng ZK cho các thử thách ngẫu nhiên.
+```
+cd Layer_1/prover-rust
+# Cú pháp: cargo run -- <PROVER_ID> <SHARD_INDICES>
+cargo run -- 1003 0,1,2,3
+```
+**Đầu ra**: * Bằng chứng nhị phân: output/prover_1003/compressed_proof_10000.bin.
+
+- Metadata: output/prover_1003/input_10000.json.
+
+- Benchmark: Các chỉ số RAM/Time lưu tại benchmark_results/.
+
+**Bước 3**: Layer 3 & Layer 2 - Sequencer & Verification
+Sequencer sẽ thu thập bằng chứng từ Layer 1 và gọi Layer 2 để xác minh.
+Khởi tạo Sequencer:
+```
+cd Layer_3
+python init_sequencer.py
+```
+**Xác minh (Verify)**: Di chuyển vào thư mục Sequencer vừa tạo và chạy script xác minh:
+```
+cd sequencer_1
+python verify_spartan_proof.py
+```
+Script này sẽ gọi run_verifier.sh ở Layer 2 thông qua WSL để kiểm tra tính đúng đắn toán học của bằng chứng.
+
+**Bước 4**: Layer 4 - Settlement (Ethereum L4)
+Sau khi xác minh xong, Sequencer đóng gói Batch Root và gửi lên Smart Contract giả lập trên Ethereum.
+```
+python submit_to_ethereum_l4.py
 ```
 
----
-
-## 📂 Project Structure
-
+Tối ưu hóa Hệ thống (Optimization): Để hệ thống đạt hiệu năng tốt nhất trên phần cứng, hãy sử dụng công cụ phân tích:
 ```
-poseidon2_folding_scheme/
-├── prover-rust/                    # Nova + Spartan prover
-│   ├── Cargo.toml                  # Dependencies (nova-snark, sha2)
-│   ├── src/
-│   │   ├── main.rs                 # CLI entry point
-│   │   └── core/
-│   │       ├── circuit.rs          # R1CS circuit (Merkle proof)
-│   │       ├── proof_engine.rs     # Nova + Spartan + attestation export
-│   │       ├── poseidon2.rs        # Poseidon2 gadget
-│   │       └── constants.rs        # Poseidon2 matrices
-│   └── target/release/engram-prover
-│
-├── layers/                         # Full-stack protocol layers (DVN/FROST/DA/Fishermen/L1)
-├── scripts/                        # Helper scripts
-│
-├── run_pipeline.sh                 # Default entrypoint (aliases full FROST pipeline)
-├── run_full_protocol_pipeline.sh   # Full-stack orchestrator (DVN + FROST + DA + Fishermen + L1)
-├── ARCHITECTURE.md                 # Full technical details
-├── requirements.txt                # Python deps
-└── README.md                       # This file
+python optimize.py
 ```
 
----
+Công cụ này sẽ dựa trên giới hạn 2GB RAM để tính toán:
 
-## 🧪 Testing
+ - Kích thước Shard tối ưu: Khuyến nghị 4096 bytes để khớp với block SSD.
 
-```bash
-# Full pipeline test
-./run_pipeline.sh
-
-# Unit tests
-cd prover-rust && cargo test --release
-```
-
-New input mode:
-
-```bash
-# Binary now reads shard_0.txt ... shard_{n-1}.txt
-ENGRAM_SHARD_COUNT=4 ENGRAM_SHARD_DIR=./data ./prover-rust/target/release/engram-prover
-```
-
----
-
-## 🚨 Troubleshooting
-
-**Cargo build fails:**
-```bash
-cd prover-rust && cargo clean && cargo build --release
-```
-
-**Circom compilation errors:**
-```bash
-cd circuits-circom && circom spartan_wrapper.circom --r1cs --wasm
-```
-
----
-
-## 📚 References
-
-- [Nova Folding Scheme](https://eprint.iacr.org/2021/370.pdf)
-- [Poseidon Hash](https://eprint.iacr.org/2023/350.pdf)
-- [Circom Documentation](https://docs.circom.io/)
-- [SnarkJS](https://github.com/iden3/snarkjs)
-- [Nova-Snark](https://github.com/microsoft/nova)
-
----
-
-**Status:** Production-Like PoC (not yet audited)
+ - Số lượng Challenges: Đặt mức 460 để đảm bảo an toàn 99% khi phát hiện gian lận xóa dữ liệu.

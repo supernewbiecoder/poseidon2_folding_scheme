@@ -2,186 +2,107 @@ import os
 import json
 import hashlib
 import subprocess
-import sys
+import time
 
-# =====================================================================
-# --- CẤU HÌNH SEQUENCER NODE ---
 # =====================================================================
 NODE_ID       = "1"
 EPOCH         = "10000"
-
-# Đường dẫn tuyệt đối an toàn
-LAYER2_DIR    = r"c:\Users\Admin\Desktop\poseidon2_folding_scheme\Layers_of_PoSt\Layer_2\Node_of_Layer_2"
+LAYER2_DIR    = r"c:/Users/Admin/Desktop/poseidon2_folding_scheme/Layers_of_PoSt/Layer_2"
 MEMPOOL_DIR   = "mempool"
 BATCH_PREFIX  = "batch_"
-COMMIT_PREFIX = "commit_"
-COMMIT_FILE   = "commit_data.json"
-VERIFIER_SCRIPT = "run_verifier.sh"  # Tên script bash của Layer 2
+RESULT_PREFIX = "result_"
+REPORT_FILE   = "summary_report.json"
+VERIFIER_SH   = "run_verifier.sh"
 # =====================================================================
 
-def hash_pair(left, right):
-    """Hàm băm 2 node lại thành node cha trên Merkle Tree"""
-    return hashlib.sha256((left + right).encode('utf-8')).hexdigest()
-
 def build_merkle_root(hashes):
-    """Dựng Merkle Tree từ danh sách proof hashes"""
     if not hashes: return "0x" + "0" * 64
-    nodes = hashes
+    nodes = sorted(hashes)
     while len(nodes) > 1:
         new_level = []
         for i in range(0, len(nodes), 2):
-            left = nodes[i]
-            right = nodes[i+1] if i+1 < len(nodes) else left
-            new_level.append(hash_pair(left, right))
+            left = nodes[i]; right = nodes[i+1] if i+1 < len(nodes) else left
+            new_level.append(hashlib.sha256((left + right).encode('utf-8')).hexdigest())
         nodes = new_level
     return nodes[0]
 
-def run_verify():
-    seq_dir = os.path.dirname(os.path.abspath(__file__))
-    batch_dir = os.path.join(seq_dir, MEMPOOL_DIR, f"{BATCH_PREFIX}{EPOCH}")
+def run_main():
+    seq_dir = os.path.dirname(os.path.abspath(__file__)).replace('\\', '/')
+    batch_dir = f"{seq_dir}/{MEMPOOL_DIR}/{BATCH_PREFIX}{EPOCH}"
+    result_dir = f"{seq_dir}/{RESULT_PREFIX}{EPOCH}"
+    os.makedirs(result_dir, exist_ok=True)
+
+    print(f"\n🚀 [Layer 3 - Sequencer {NODE_ID}] Bắt đầu xác minh Batch Epoch: {EPOCH}")
     
-    # Kiểm tra xem có file bằng chứng trong mempool không
-    proof_files = []
+    prover_ids = []; proof_hashes = []
     if os.path.exists(batch_dir):
-        # Tìm tất cả file proof cho epoch này
         for f in os.listdir(batch_dir):
-            if f.startswith(f"compressed_proof_{EPOCH}_") and f.endswith('.bin'):
-                # Trích xuất prover_id từ tên file
-                prover_id = f.replace(f"compressed_proof_{EPOCH}_", "").replace(".bin", "")
-                proof_files.append({
-                    "file": f,
-                    "prover_id": prover_id
-                })
-    
-    if not proof_files:
-        print(f"\n[Sequencer {NODE_ID}] ⚠️ Không tìm thấy bằng chứng nào cho epoch {EPOCH}")
-        print(f"📂 Đã tìm tại: {batch_dir}")
-        print(f"💡 Cần copy file: compressed_proof_{EPOCH}_<prover_id>.bin và input_{EPOCH}_<prover_id>.json")
+            if f.startswith(f"input_{EPOCH}_") and f.endswith(".json"):
+                pid = f.replace(f"input_{EPOCH}_", "").replace(".json", "")
+                prover_ids.append(pid)
+                with open(os.path.join(batch_dir, f), 'r') as jf:
+                    data = json.load(jf)
+                    if 'spartan_proof_hash' in data: proof_hashes.append(data['spartan_proof_hash'])
+
+    if not prover_ids:
+        print("⚠️ Mempool trống.")
         return
-    
-    print(f"\n[Sequencer {NODE_ID}] Bắt đầu xác minh Batch {EPOCH}...")
-    print(f"📊 Tìm thấy {len(proof_files)} bằng chứng cần xác minh")
-    
-    verifier_script_path = os.path.join(LAYER2_DIR, VERIFIER_SCRIPT)
-    
-    # Kiểm tra script có tồn tại không
-    if not os.path.exists(verifier_script_path):
-        print(f"❌ Không tìm thấy script verifier tại: {verifier_script_path}")
-        print(f"💡 Hãy đảm bảo file run_verifier.sh tồn tại trong thư mục Layer 2")
-        return
-    
-    # Đảm bảo script có quyền thực thi
-    os.chmod(verifier_script_path, 0o755)
-    
-    all_results = []
-    proof_hashes = []
-    
-    for proof_info in proof_files:
-        prover_id = proof_info["prover_id"]
-        
-        print(f"\n============================================================")
-        print(f"🔍 Kiểm tra Prover: {prover_id}")
-        print(f"============================================================")
-        
-        # Đọc proof hash từ input json
-        input_json = os.path.join(batch_dir, f"input_{EPOCH}_{prover_id}.json")
-        if os.path.exists(input_json):
-            with open(input_json, 'r') as f:
-                data = json.load(f)
-                if 'spartan_proof_hash' in data:
-                    proof_hashes.append(data['spartan_proof_hash'])
-                    print(f"📝 Proof hash: {data['spartan_proof_hash'][:50]}...")
-        
-        # GỌI BASH SCRIPT CỦA LAYER 2
+
+    report_name = f"dvn_DVN_{NODE_ID}_epoch_{EPOCH}.txt"
+    report_path = os.path.join(LAYER2_DIR, "verifier_results", report_name)
+
+    # BƯỚC SỬA LỖI 1: Xóa file kết quả cũ (nếu có) trước khi chạy vòng lặp
+    if os.path.exists(report_path):
         try:
-            # Chạy script bash với các tham số
-            cmd = [verifier_script_path, f"DVN_{NODE_ID}", EPOCH, prover_id]
+            os.remove(report_path)
+        except:
+            pass
+
+    summary_list = []
+    for pid in prover_ids:
+        print(f"\n--- 🛰️ Đang gọi [Layer 2] {VERIFIER_SH} cho Prover {pid} ---")
+        try:
+            wsl_exe = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'wsl.exe')
+            cmd = [wsl_exe, "bash", f"./{VERIFIER_SH}", f"DVN_{NODE_ID}", str(EPOCH), pid]
             
-            print(f"🚀 Chạy lệnh: {' '.join(cmd)}")
+            subprocess.run(cmd, cwd=LAYER2_DIR, shell=False)
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=LAYER2_DIR  # Chạy trong thư mục Layer 2
-            )
+            # BƯỚC SỬA LỖI 2: Nghỉ 0.5 giây để đợi WSL lưu file lên Windows
+            time.sleep(0.5)
             
-            # In output
-            if result.stdout:
-                print(result.stdout)
-            if result.stderr:
-                print(f"⚠️ Stderr: {result.stderr}", file=sys.stderr)
-            
-            # Kiểm tra kết quả từ file output của Layer 2
-            results_dir = os.path.join(LAYER2_DIR, "verifier_results")
-            result_file = os.path.join(results_dir, f"dvn_DVN_{NODE_ID}_epoch_{EPOCH}.txt")
-            
-            if os.path.exists(result_file):
-                with open(result_file, 'r') as f:
-                    content = f.read()
-                    # Tìm dòng có chứa prover_id và status
-                    if f"Prover {prover_id}" in content and "✅ PASS" in content:
-                        print(f"✅ Prover {prover_id} xác minh THÀNH CÔNG")
-                        all_results.append(True)
-                    else:
-                        print(f"❌ Prover {prover_id} xác minh THẤT BẠI")
-                        all_results.append(False)
-            else:
-                # Nếu không có file, dựa vào exit code
-                if result.returncode == 0:
-                    print(f"✅ Prover {prover_id} xác minh THÀNH CÔNG (exit code 0)")
-                    all_results.append(True)
-                else:
-                    print(f"❌ Prover {prover_id} xác minh THẤT BẠI (exit code {result.returncode})")
-                    all_results.append(False)
+            status = "not pass"
+            if os.path.exists(report_path):
+                with open(report_path, 'r', encoding='utf-8') as rf:
+                    # BƯỚC SỬA LỖI 3: Chuyển hết thành CHỮ IN HOA để chống sai sót cú pháp
+                    content = rf.read().upper()
                     
+                    # In ra màn hình để bạn dễ debug xem Layer 2 trả về cái gì
+                    print(f"   [Debug Nội dung file]: {content.strip()}")
+                    
+                    # Kiểm tra linh hoạt hơn (bỏ qua hoa/thường)
+                    if f"PROVER {pid}: PASS" in content or f"PROVER {pid} : PASS" in content: 
+                        status = "pass"
+            else:
+                print(f"   [Debug]: Không tìm thấy file {report_path}!")
+                
+            print(f"➡️ Kết quả nhận diện: {status.upper()}")
+            summary_list.append({"prover_id": pid, "result": status})
+            
         except Exception as e:
-            print(f"❌ Lỗi khi chạy verifier cho Prover {prover_id}: {e}")
-            all_results.append(False)
-    
-    # Tính Batch Merkle Root
-    batch_root = build_merkle_root(proof_hashes)
-    
-    # Tạo chữ ký
-    signature_data = f"{NODE_ID}{EPOCH}{batch_root}"
-    signature = hashlib.sha256(signature_data.encode()).hexdigest()
-    
-    # Đóng gói kết quả
-    commit_dir = os.path.join(seq_dir, f"{COMMIT_PREFIX}{EPOCH}")
-    os.makedirs(commit_dir, exist_ok=True)
-    
-    success_count = sum(all_results)
-    total_count = len(proof_files)
-    
-    commit_data = {
-        "epoch_id": int(EPOCH),
-        "id_node_sequencer": f"DVN_{NODE_ID}",
-        "batch_merkle_root": batch_root,
-        "signature": signature,
-        "total_proofs": total_count,
-        "successful_verifications": success_count,
-        "failed_verifications": total_count - success_count,
-        "status": "Verified & Ready for L1" if success_count == total_count else "Partial Verification",
-        "verification_details": [
-            {
-                "prover_id": p["prover_id"],
-                "success": all_results[i] if i < len(all_results) else False
-            }
-            for i, p in enumerate(proof_files)
-        ]
+            print(f"❌ Lỗi thực thi Layer 2: {e}")
+
+    report_data = {
+        "sequencer_id": f"DVN_{NODE_ID}",
+        "epoch": EPOCH,
+        "batch_merkle_root": build_merkle_root(proof_hashes),
+        "summary": summary_list
     }
     
-    commit_path = os.path.join(commit_dir, COMMIT_FILE)
-    with open(commit_path, "w", encoding="utf-8") as f:
-        json.dump(commit_data, f, indent=4)
-    
-    print(f"\n============================================================")
-    print(f"✅ ĐÃ ĐÓNG GÓI BATCH {EPOCH}!")
-    print(f"   - Tổng số bằng chứng: {total_count}")
-    print(f"   - Xác minh thành công: {success_count}")
-    print(f"   - Batch Merkle Root: {batch_root}")
-    print(f"📂 Dữ liệu (chờ gửi lên Bitcoin): {commit_path}")
-    print(f"============================================================\n")
+    with open(os.path.join(result_dir, REPORT_FILE), 'w', encoding='utf-8') as f:
+        json.dump(report_data, f, indent=4)
+        
+    print(f"\n✅ Đã tổng hợp kết quả vào: {result_dir}")
+    print(f"➡️ Gợi ý bước tiếp theo: Chạy file 'submit_to_ethereum_l4.py' để gửi bằng chứng lên Layer 4 (Optimistic Ethereum)!")
 
 if __name__ == "__main__":
-    run_verify()
+    run_main()

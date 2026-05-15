@@ -1,13 +1,31 @@
-# Python virtual environments
+# ========================
+# PYTHON & ENVIRONMENTS
+# ========================
 venv/
 .venv/
-#npm environments
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.env.*
+!.env.example
+
+# ========================
+# NODE & NPM
+# ========================
 node_modules/
-# Rust build outputs
+circuits-circom/node_modules/
+
+# ========================
+# RUST BUILD OUTPUTS
+# ========================
 target/
 prover-rust/target/
+**/*.rs.bk
 
-# Circom / snarkjs generated artifacts
+# ========================
+# ZKP / CIRCOM / SPARTAN
+# ========================
 circuits-circom/*.r1cs
 circuits-circom/*.wtns
 circuits-circom/*.zkey
@@ -19,22 +37,37 @@ circuits-circom/proof.json
 circuits-circom/public.json
 circuits-circom/input.json
 circuits-circom/verification_key.json
-circuits-circom/spartan_wrapper_js/spartan_wrapper.wasm
+circuits-circom/witness.wtns
 
 # Wrapper / witness helper outputs
 circuits-circom/spartan_wrapper_js/*.wasm
 circuits-circom/spartan_wrapper_js/*.sym
 circuits-circom/spartan_wrapper_js/*.log
-circuits-circom/witness.wtns
 
-# Comparison / benchmark outputs
+# ========================
+# ENGRAM PROJECT LAYERS
+# ========================
+/Layers_of_PoSt/Layer_0_genesis_setup/benchmark_results/
+/Layers_of_PoSt/Layer_0_genesis_setup/network_params/
+/Layers_of_PoSt/Layer_1/output/
+/Layers_of_PoSt/Layer_1/output/prover/benchmark_results/
+/Layers_of_PoSt/Layer_2/benchmark_results/
+/Layers_of_PoSt/Layer_2/verifier_results/
+/Layers_of_PoSt/Layer_3/sequencer_*/
+
+# Custom Scripts & Simulation Outputs
 lotus-bench*.log
 comparison_report.json
+Engram_Optimization_Curve.png
+Engram_Ultimate_Optimization.png
+ethereum_rollup_inbox.json
 
-# Node dependencies (if circomlib or other packages are installed locally)
-circuits-circom/node_modules/
-
-# Logs and OS/editor noise
+# ========================
+# IDE & OS NOISE
+# ========================
+.vscode/
+.idea/
 *.log
 .DS_Store
 Thumbs.db
+ehthumbs.db
