@@ -297,7 +297,7 @@ Tài liệu này chi tiết hóa các biến số và hệ thức toán học x�
 
 ### 3. Biến số Lõi (The Bottleneck Variable)
 Đây là biến số quyết định toàn bộ yêu cầu về RAM và thời gian xử lý:
-$$C_{step}(b) = C_{pos} \cdot \underbrace{\left\lceil \frac{b}{W} \right\rceil}_{\text{Băm dữ liệu Shard}} + C_{pos} \cdot \underbrace{\lceil \log_2\left(\frac{S}{b}\right) \rceil}_{\text{Băm Merkle Path}}$$
+$$C_{step}(b) = C_{pos} \cdot \underbrace{\left\lceil \frac{b}{W} \right\rceil}{\text{Băm dữ liệu Shard}} + C{pos} \cdot \underbrace{\lceil \log_2\left(\frac{S}{b}\right) \rceil}_{\text{Băm Merkle Path}}$$
 
 ---
 
