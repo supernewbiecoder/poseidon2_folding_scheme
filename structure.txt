@@ -1,0 +1,57 @@
+engram_simulation/
+├── Cargo.toml                      # File cấu hình khai báo Workspace
+│
+├── core/                           # Crate: Thư viện lõi dùng chung (Không chạy độc lập)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       ├── poseidon2.rs            # Thuật toán Poseidon2 đã được test vector khớp với SageMath
+│       ├── merkle.rs               # Cấu trúc Merkle Tree và logic sinh Merkle Path
+│       └── types.rs                # Các struct dùng chung (Proof, ReplicaId, Metadata...)
+│
+├── setup_phase/                    # Crate: Tiến trình khởi tạo (Chạy 1 lần)
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                 # Sinh pp, pk, vk và lưu ra file (.bin hoặc .json)
+│
+├── verifier_api/                   # Crate: Node Verifier (Đóng vai trò Backend Server)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs                 # Khởi chạy server API (ví dụ dùng Axum/Actix-web)
+│       ├── state.rs                # In-memory DB (lưu R_sealed, metadata của các deal)
+│       └── routes.rs               # Các endpoint REST (POST /deal, GET /challenge, POST /verify)
+│
+├── prover_client/                  # Crate: Node Prover (Đóng vai trò Client / Worker)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs                 # Hàm main điều phối toàn bộ quy trình
+│       ├── api_client.rs           # Chứa các hàm HTTP request gọi lên Verifier API
+│       ├── sealer.rs               # Logic đọc file, băm dữ liệu và ghi Replica ra ổ cứng
+│       ├── folding.rs              # Logic IVC/Nova đệ quy sinh z_i
+│       └── circuit.rs              # Định nghĩa Step Circuit cho 1 chunk
+│
+├── benches/                        # Thư mục chứa các script đo lường hiệu năng
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── hardware_env.rs         # Tự động lấy thông số CPU, RAM, OS
+│   │   ├── bench_constraints.rs    # Đếm số lượng constraints của Poseidon2, Merkle
+│   │   └── bench_time.rs           # Đo prove_time_per_step, verify_time
+│   └── report_output/              # Nơi xuất các file CSV/JSON kết quả benchmark
+│
+└── tests/                          # Thư mục kiểm thử toàn hệ thống
+    ├── honest_flow_test.rs         # Test kịch bản Happy Path (Prover trung thực)
+    ├── prover_cheat_test.rs        # Test kịch bản đối kháng (Xóa shard, gửi sai D_i...)
+    └── system_fail_test.rs         # Test kịch bản mạng lưới (Sai epoch, DA sập...)
+
+Luồng triển khai theo cấu trúc này
+Khởi tạo lõi (core/): Xây dựng các hàm toán học trước. Mọi crate khác đều phụ thuộc (import) crate này.
+
+Khởi tạo hệ thống (setup_phase/): Viết script sinh ra các file khóa vật lý.
+
+Xây dựng Backend (verifier_api/): Thiết kế crate này như một REST API server thông thường xử lý các request xác minh. Trước khi code xong phần Prover, bạn hoàn toàn có thể chạy server này lên và dùng Postman để test thử các luồng gửi request POST /deal hay lấy GET /challenge xem logic phản hồi đã chuẩn chưa.
+
+Xây dựng Client (prover_client/): Đây là nơi chứa logic nặng nhất. Nó sẽ nạp file khóa pk, thực hiện các phép tính toán học nặng, thao tác I/O với ổ cứng để đọc/ghi file thô, và gọi API lên Verifier.
+
+Đo lường & Tấn công (benches/ & tests/): Bóc tách các hàm từ Prover và Verifier ra để chạy mô phỏng hàng nghìn lần lấy số liệu RAM, CPU, hoặc truyền dữ liệu rác vào để xem Verifier có bắt được lỗi không.
+
+Việc thiết lập Workspace trong Cargo.toml gốc khá đơn giản, bạn chỉ cần khai báo danh sách các thư mục con là Cargo sẽ tự động liên kết chúng.

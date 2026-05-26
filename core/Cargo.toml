@@ -1,0 +1,14 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+description = "Thư viện lõi dùng chung cho Engram (Poseidon2, Merkle Tree, Types)"
+
+[dependencies]
+# Thư viện cho trường hữu hạn và đường cong Pallas/Vesta
+ff = "0.13.0"
+pasta_curves = "0.5.1"
+
+# Tiện ích để khởi tạo ma trận tĩnh và giải mã Hex
+lazy_static = "1.4.0"
+hex = "0.4.3"
