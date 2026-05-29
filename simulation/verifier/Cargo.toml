@@ -1,0 +1,11 @@
+[package]
+name = "verifier"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core_primitives = { path = "../core_primitives" }
+prover = { path = "../prover" }
+pasta_curves = "0.5"
+ff = "0.13"
+nova-snark = "0.71.1"

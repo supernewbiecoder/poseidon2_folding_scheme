@@ -1,0 +1,95 @@
+Đã đọc toàn bộ code. Bây giờ tôi phân tích chi tiết cả hai câu hỏi:Đã đọc toàn bộ code. Phân tích chi tiết:Dưới đây là phân tích chi tiết theo từng câu hỏi:
+
+# Audit: Logic Kịch Bản & Benchmark Metadata
+
+Tài liệu này tổng hợp kết quả kiểm định (audit) hệ thống liên quan đến các kịch bản kiểm thử đối kháng (Adversarial Testing) và tính đầy đủ của dữ liệu Benchmark metadata phục vụ cho mục đích công bố (publish).
+
+---
+
+## A. Kịch bản kiểm thử đối kháng (Adversarial Testing)
+
+| Kịch bản yêu cầu | Trong code | Kết quả thực tế (CSV) | Trạng thái |
+| :--- | :--- | :--- | :---: |
+| **1. Xóa 1% shard** | `drop_raw_pct=10`, xóa cứng index 20 | KB1 Status=Valid (không bị bắt!) | ❌ **SAI** |
+| **1. Xóa 5% shard** | Không có kịch bản riêng | Không chạy | ❌ **THIẾU** |
+| **1. Xóa 10% shard** | Tham số `drop_raw_pct=10` nhưng chỉ xóa 1 chunk | Chưa = 10% thật | ⚠️ **NHẦM** |
+| **2. Chỉ lưu $S_i$, không lưu $D_i$** | `KB1_DropData`: xóa `raw_chunks[20]` | Status=Valid (qua!)<br>Challenge index $\neq 20$ | ❌ **SAI** |
+| **3. Thiếu $S_{i-1}$** | `KB3_DropState`: xóa `states[19]` | Status=Valid (qua!)<br>Challenge index $\neq j_{i-1} = 19$ | ❌ **SAI** |
+| **4. Sai epoch / challenge seed** | `KB4: proof_epoch=0`, `verify_epoch=1` | Status=Invalid ✓<br>Nova bắt đúng |  **ĐÚNG** |
+
+### 🔍 Nguyên nhân gốc rễ (KB1, KB2, KB3 đều sai)
+* Code hiện tại đang thực hiện xóa index cố định (`20` hoặc `19`), tuy nhiên `challenge` lại được derive từ `epoch_hash` $\rightarrow j_i$ mang tính ngẫu nhiên.
+* Nếu $j_i$ được sinh ra không trùng với index đã xóa hardcode $\rightarrow$ bộ chứng minh (prover) vẫn sẽ vượt qua (pass).
+* **Giải pháp khắc phục:** Cần thực hiện xóa chính xác vị trí $j_i$ sau khi quá trình derive hoàn tất, tuyệt đối không xóa hardcode cố định.
+
+---
+
+## B. Benchmark metadata (Yêu cầu phục vụ publish)
+
+| Trường bắt buộc | Có trong code/CSV? | Đánh giá |
+| :--- | :--- | :---: |
+| `CPU model` | Không có — chỉ có timing ms | ❌ **Thiếu** |
+| `RAM peak` (đúng per-phase) | Có (Setup/Seal/Challenge/Prove/Verify) |  **Có ✓** |
+| `Hệ điều hành` | Không có | ❌ **Thiếu** |
+| `Rust version` | Không có | ❌ **Thiếu** |
+| `Git commit hash` | Không có | ❌ **Thiếu** |
+| `Sector size / shard size` | Có trong config (32MB, 4KB) nhưng không xuất ra CSV | ⚠️ **Thiếu** |
+| `Challenge count` | Ghi ngầm qua `Challenge_Indices` (10 giá trị) | ⚠️ **Ngầm** |
+| `C_hash_poseidon2`, `C_merkle_path`, `C_chunk_absorb_4KB` | Có trong CSV, nhưng challenge phase ghi nhận = 0 ms | ⚠️ **Lỗi** |
+| `prove_time_per_step`, `fold_time_per_step`, `verify_time` | Có và chính xác |  **Có ✓** |
+| `compressed_proof_size` | Có (~11 KB — không đổi qua các lượt chạy) |  **Có ✓** |
+
+---
+
+## 📌 Tổng kết kết luận
+
+**Hệ thống Benchmark CHƯA ĐỦ ĐIỀU KIỆN để tiến hành publish:**
+1. **Thiếu thông tin môi trường phần cứng và phần mềm:** Các trường thông tin quan trọng như `CPU model`, `OS`, `Rust version`, `git commit hash`, và `sector/shard size` hoàn toàn không được đẩy vào file kết quả CSV.
+2. **Lỗi logic đo lường thời gian (Timing Metrics):** Các chỉ số đo đạc challenge metrics của `Poseidon2` và `Merkle path` đều trả về giá trị `= 0 ms` — đây là lỗi tính toán sai sót thời gian trong luồng chạy thông thường (happy path).
+
+---
+
+## 1. Logic kịch bản kiểm thử — có 3 lỗi nghiêm trọng
+
+**Lỗi cốt lõi:** Code xóa index cứng (`raw_chunks.remove(&20)` và `states.remove(&19)`), nhưng challenge index `j_i` được derive ngẫu nhiên từ epoch hash. Với `challenge_indices = 888;3033;5178;...` trong CSV, không index nào là 20 hay 19, nên prover không bao giờ "chạm" vào chỗ đã xóa → **vẫn pass, ghi `Status=Valid`**.
+
+**Kịch bản 1 — Xóa 1%/5%/10% shard:** Tham số `drop_raw_pct` tên thì gọi là "%" nhưng logic chỉ làm `storage.raw_chunks.remove(&20)` — tức là xóa đúng 1 chunk cố định bất kể giá trị 10. Không có kịch bản nào chạy 1% hay 5%. Cần viết lại:
+```rust
+// Đúng: xóa chunk tại j_i sau khi derive
+let j_to_drop = j_i; // hoặc j_i ± offset để simulate
+storage.raw_chunks.remove(&j_to_drop);
+```
+
+**Kịch bản 2 — Chỉ lưu S_i, không lưu D_i:** Đây là `KB1_DropData`, xóa `raw_chunks[20]`. Kết quả CSV: tất cả 5 lần đều `Status=Valid` vì challenge không rơi vào index 20. Kịch bản này **không bắt được lỗi**.
+
+**Kịch bản 3 — Thiếu S_{i-1}:** `KB3_DropState` xóa `states[19]`, nhưng challenge cần `states[j_i - 1]` — với `j_i = 888`, nó cần `states[887]`, không phải 19. Tất cả 5 lần đều `Status=Valid`.
+
+**Kịch bản 4 — Sai epoch:** `KB4_OldProof_NewEpoch` là kịch bản duy nhất **hoạt động đúng** — Nova verify với `z0 = [epoch=1, ...]` nhưng proof sinh ở `epoch=0` → bị bắt, `Status=Invalid`. ✓
+
+---
+
+## 2. Benchmark metadata — chưa đủ để publish
+
+**Thiếu hoàn toàn (không có trong CSV):**
+- CPU model (e.g. `Intel Core i7-12700K`)
+- Hệ điều hành (Windows/Linux, kernel version)
+- Rust version (`rustc --version`)
+- Git commit hash
+
+**Có nhưng chưa đúng:**
+- `Seal_C_chunk_absorb_4KB_ms` và `Seal_C_hash_poseidon2_ms` đều **= 0** trong CSV — timer được đo nhưng bị chia nhỏ đến mức `as_millis()` làm tròn về 0; cần dùng `as_micros()` hoặc `Duration`.
+- Challenge phase metrics (`Challenge_C_hash_poseidon2_ms`, `Challenge_C_merkle_path_ms`) cũng = 0 vì cùng lý do.
+- `sector_size`, `chunk_size`, `challenges_per_epoch` không được ghi vào CSV — người đọc không thể tái hiện kết quả nếu chạy config khác.
+
+**Có và đúng:** `prove_time_per_step_ms`, `fold_time_per_step_ms`, `compressed_proof_size_bytes`, `verify_time_ms`, `RAM_peak_KiB` per phase.
+
+**Khắc phục nhanh nhất:** Thêm 1 header row metadata vào đầu CSV hoặc file sidecar `.json`:
+```json
+{
+  "cpu": "...", "os": "...", "rustc": "...", "commit": "...",
+  "sector_size_bytes": 33554432, "chunk_size_bytes": 4096,
+  "challenges_per_epoch": 10
+}
+```
+Và đổi tất cả timer sang `as_micros()` rồi chia 1000.0 để giữ độ chính xác sub-millisecond.
+

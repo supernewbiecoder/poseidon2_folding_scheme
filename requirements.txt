@@ -2,3 +2,5 @@ pandas
 tabulate
 matplotlib
 ecdsa
+numpy
+scipy

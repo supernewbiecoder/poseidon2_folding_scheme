@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "data_generator",
+    "core_primitives",
+    "prover",
+    "verifier",
+    "simulator_runner"
+]
+
+# Tối ưu hóa bắt buộc cho các bài toán Cryptography/ZKP
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

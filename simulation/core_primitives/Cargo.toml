@@ -1,0 +1,11 @@
+[package]
+name = "core_primitives"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pasta_curves = "0.5"    # Đường cong Pallas/Vesta cho Nova
+ff = "0.13"             # Trait cho Finite Fields
+lazy_static = "1.4"     # Khởi tạo ma trận và hằng số tĩnh
+hex = "0.4.3"           # Giải mã hex từ script Sage của bạn
+rayon = "1.8"           # Đa luồng cho Merkle tree build
