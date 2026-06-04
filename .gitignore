@@ -61,6 +61,7 @@ comparison_report.json
 Engram_Optimization_Curve.png
 Engram_Ultimate_Optimization.png
 ethereum_rollup_inbox.json
+/simulation/mockdata/
 
 # ========================
 # IDE & OS NOISE
@@ -71,3 +72,5 @@ ethereum_rollup_inbox.json
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+/mockdata_oidoioi

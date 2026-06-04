@@ -1,3 +1,11 @@
+//! Simulator runner
+//!
+//! Đây là binary chịu trách nhiệm điều phối toàn bộ simulation/benchmark:
+//! - Gọi `Sealer` để seal dữ liệu mock
+//! - Sinh challenges, áp dụng kịch bản tấn công (drop raw/state)
+//! - Xây EngramStepCircuit cho mỗi challenge và chạy Proving/Verification
+//! - Ghi kết quả benchmark ra CSV
+//!
 use core_primitives::config::EngramConfig;
 use core_primitives::merkle_tree::verify_merkle_proof;
 use core_primitives::Fr;
@@ -12,6 +20,8 @@ use std::io::Write;
 use std::process::Command;
 use std::time::Instant;
 use sysinfo::{CpuExt, System, SystemExt};
+
+type NovaFr = Fr;
 
 macro_rules! logln {
     ($log_file:expr, $($arg:tt)*) => {{
@@ -77,6 +87,7 @@ fn read_first_existing_file(paths: &[&str]) -> Option<Vec<u8>> {
     None
 }
 
+/// Đọc file text đầu tiên tồn tại trong `paths`.
 fn read_first_existing_text(paths: &[&str]) -> Option<String> {
     // Single-source behavior: only attempt the first provided path.
     if let Some(path) = paths.first() {
@@ -87,28 +98,27 @@ fn read_first_existing_text(paths: &[&str]) -> Option<String> {
     None
 }
 
-fn load_mock_sector_data(config: &EngramConfig) -> Vec<u8> {
-    // Single-source: expect mockdata under `mockdata/data` in repository root.
-    let path = "mockdata/data/client_raw_data.bin";
-    if let Ok(metadata) = std::fs::metadata(path) {
+fn get_raw_data_path(config: &EngramConfig) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from("mockdata/data/client_raw_data.bin");
+    if let Ok(metadata) = std::fs::metadata(&path) {
         if metadata.len() as usize == config.sector_size_bytes {
-            return std::fs::read(path).expect("Không thể đọc file client_raw_data.bin");
-        } else {
-            panic!(
-                "client_raw_data.bin tồn tại nhưng kích thước không đúng: {} bytes (cần {})",
-                metadata.len(),
-                config.sector_size_bytes
-            );
+            return path;
         }
+        panic!(
+            "client_raw_data.bin sai kích thước: {} bytes (cần {})",
+            metadata.len(), config.sector_size_bytes
+        );
     }
-    panic!("Không tìm thấy client_raw_data.bin trong mockdata/data — hãy chạy data_generator để tạo file đúng kích thước.");
+    panic!("Không tìm thấy client_raw_data.bin — chạy data_generator trước.");
 }
 
+/// Load mock metadata từ `mockdata/metadata/metadata.json`.
 fn load_mock_metadata() -> MockMetadata {
     let metadata_text = read_first_existing_text(&["mockdata/metadata/metadata.json"]) .expect("Không thể đọc mock metadata.json");
     serde_json::from_str(&metadata_text).expect("Không thể parse mock metadata.json")
 }
 
+/// Load danh sách bitcoin epoch hashes từ mock file.
 fn load_bitcoin_epoch_hashes() -> Vec<String> {
     let text = read_first_existing_text(&["mockdata/bitcoin_mocks/bitcoin_blocks.txt"]) .expect("Không thể đọc mock bitcoin_blocks.txt");
     text.lines()
@@ -116,18 +126,36 @@ fn load_bitcoin_epoch_hashes() -> Vec<String> {
         .collect()
 }
 
+/// Chuyển đổi bytes tùy ý thành Fr bằng cách fold từng lát 31-byte.
+/// PHẢI đồng nhất với chunk_to_fr() trong sealing.rs để witness D_ji khớp.
+/// Chuyển `bytes` thành `Fr` theo cùng quy tắc fold 31-byte như `chunk_to_fr`.
+///
+/// Phải giữ cùng thuật toán với `sealing.rs` để D_ji khớp khi build witness.
 fn bytes_to_fr(bytes: &[u8]) -> Fr {
-    let mut repr = [0u8; 32];
-    let len = bytes.len().min(32);
-    repr[..len].copy_from_slice(&bytes[..len]);
-    repr[31] &= 0x3f;
-    Fr::from_repr(repr).unwrap()
+    use core_primitives::poseidon2::hash_2 as p2_hash_2;
+    const SLICE_SIZE: usize = 31;
+
+    let mut acc = core_primitives::Fr::from(bytes.len() as u64);
+
+    for window in bytes.chunks(SLICE_SIZE) {
+        let mut repr = [0u8; 32];
+        repr[..window.len()].copy_from_slice(window);
+        let slice_fr = Fr::from_repr(repr.into()).unwrap_or_else(|| {
+            repr[31] = 0;
+            Fr::from_repr(repr.into()).unwrap_or(Fr::ZERO)
+        });
+        acc = p2_hash_2(acc, slice_fr);
+    }
+
+    acc
 }
 
+/// Chuyển chuỗi thành `Fr` (sử dụng `bytes_to_fr`).
 fn string_to_fr(value: &str) -> Fr {
     bytes_to_fr(value.as_bytes())
 }
 
+/// Gộp một dãy `Fr` bằng `hash_2` liên tiếp (dùng làm PRF/seed).
 fn poseidon2_chain(values: &[Fr]) -> Fr {
     let mut acc = Fr::ZERO;
     for value in values {
@@ -143,6 +171,7 @@ fn select_epoch_hash(hashes: &[String], epoch: usize) -> String {
     hashes[epoch % hashes.len()].clone()
 }
 
+/// Derive replica id từ metadata (domain-specific Poseidon chain).
 fn derive_replica_id(metadata: &MockMetadata) -> Fr {
     let client_id = string_to_fr(&metadata.client_id);
     let deal_id = string_to_fr(&metadata.deal_id);
@@ -168,14 +197,22 @@ fn derive_challenge_index(
     (usize::from(seed_bytes.as_ref()[0]) % num_chunks).saturating_add(1)
 }
 
-// FIX: z0 giờ có 4 phần tử (arity=4): [epoch, 0, D_ji, S_ji-1]
-// Hàm này chỉ dùng để build initial z0 khi verify — cần D_ji và S_ji-1 của challenge đầu.
-type NovaFr = <PallasEngine as Engine>::Scalar;
-
-fn public_input_for_epoch(epoch: usize, d_ji_first: NovaFr, s_ji_minus_1_first: NovaFr) -> Vec<NovaFr> {
-    vec![NovaFr::from(epoch as u64), NovaFr::ZERO, d_ji_first, s_ji_minus_1_first]
+/// Tạo public input vector dạng `NovaFr` cho một epoch (z0 format).
+// z0 giờ có 7 phần tử (arity=7): [epoch, 0, sector_id, sealed_root, beacon, replica_id, z_acc]
+// z_acc khởi tạo = replica_id theo spec Demo.md (z_0 = Replica_id).
+fn public_input_for_epoch(epoch: usize, sector_id: NovaFr, sealed_root: NovaFr, beacon: NovaFr, replica_id: NovaFr) -> Vec<NovaFr> {
+    vec![
+        NovaFr::from(epoch as u64),
+        NovaFr::ZERO,
+        sector_id,
+        sealed_root,
+        beacon,
+        replica_id,
+        replica_id, // z_acc = replica_id tại bước khởi tạo
+    ]
 }
 
+/// Chuyển `core` Fr sang `NovaFr` an toàn.
 fn nova_fr_from_core(f: Fr) -> NovaFr {
     let bytes = f.to_repr();
     NovaFr::from_repr(bytes.into()).unwrap_or(NovaFr::ZERO)
@@ -197,8 +234,17 @@ fn build_reference_challenge(
         .expect("Không thể tạo challenge mẫu vì thiếu Merkle tree")
         .root;
     let j_i = derive_challenge_index(&proof_epoch_hash, sector_id, proof_epoch, 1, num_chunks_total);
+    // Tính j_i_seed: giá trị hash_chain đầy đủ TRƯỚC khi % N — để truyền vào circuit
+    let j_i_seed = {
+        let beacon_fr = string_to_fr(&proof_epoch_hash);
+        let sector_fr = Fr::from(sector_id);
+        let epoch_fr = Fr::from(proof_epoch as u64);
+        let challenge_fr = Fr::from(1u64); // challenge_no = 1 (1-based)
+        poseidon2_chain(&[beacon_fr, sector_fr, epoch_fr, challenge_fr])
+    };
     let d_ji = storage
         .get_raw_chunk(j_i)
+        .as_deref()
         .map(bytes_to_fr)
         .unwrap_or_else(|| Fr::ZERO);
     let s_ji_minus_1 = storage
@@ -221,6 +267,7 @@ fn build_reference_challenge(
         sealed_root,
         beacon,
         j_i,
+        j_i_seed,
         d_ji,
         s_ji_minus_1,
         s_ji,
@@ -230,10 +277,7 @@ fn build_reference_challenge(
     }
 }
 
-// ---------------------------------------------------------------------------
-// 3. Deterministic drop helper
-// ---------------------------------------------------------------------------
-
+/// LCG helper (deterministic pseudo-random) dùng cho drop simulations.
 fn lcg_next(state: &mut u64) -> u64 {
     *state = state
         .wrapping_mul(6364136223846793005)
@@ -241,6 +285,7 @@ fn lcg_next(state: &mut u64) -> u64 {
     *state
 }
 
+/// Deterministic helper để chọn danh sách indices cần drop.
 fn deterministic_drop_random_pct(drop_pct: f64, seed: u64, num_chunks: usize) -> Vec<usize> {
     if num_chunks == 0 || drop_pct <= 0.0 {
         return Vec::new();
@@ -364,7 +409,7 @@ fn main() {
         logln!(transcript_log, "⛏️  Epoch {} bitcoin hash: {}", i, h);
     }
 
-    let mock_sector_data = load_mock_sector_data(&config);
+    let raw_data_path = get_raw_data_path(&config);
     let sealer = Sealer::new(config.clone());
 
     // Header CSV
@@ -373,8 +418,8 @@ fn main() {
         "Scenario,Run_ID,Status,Attack_Mode,Drop_Targets,Sector_Size_Bytes,Chunk_Size_Bytes,Challenges_Per_Epoch,\
          Proof_Epoch,Verify_Epoch,Epoch_Status,Proof_Epoch_Hash,Verify_Epoch_Hash,Challenge_Seed,Challenge_Indices,\
          Setup_PublicParams_ms,Setup_PkVk_ms,Setup_RAM_peak_KiB,\
-         Seal_C_chunk_absorb_4KB_ms,Seal_C_hash_poseidon2_ms,Seal_C_merkle_build_ms,Seal_RAM_peak_KiB,\
-         Challenge_C_hash_poseidon2_ms,Challenge_C_merkle_path_ms,Challenge_RAM_peak_KiB,\
+         Seal_C_chunk_absorb_4KB_ms,Seal_C_hash_poseidon2_ms,Seal_C_merkle_build_ms,Seal_IO_read_ms,Seal_IO_read_count,Seal_RAM_peak_KiB,\
+         Challenge_C_hash_poseidon2_ms,Challenge_C_merkle_path_ms,Challenge_IO_read_ms,Challenge_IO_read_count,Challenge_RAM_peak_KiB,\
          C_step_total_ms,C_augmented_nova_ms,prove_time_per_step_ms,fold_time_per_step_ms,\
          compressed_proof_size_bytes,Prove_RAM_peak_KiB,Verify_VK_Setup_ms,verify_time_ms,Verify_RAM_peak_KiB"
     )
@@ -389,9 +434,9 @@ fn main() {
     );
     let mut master_storage = ProverStorage::new();
     let seal_start = Instant::now();
-    let seal_metrics = sealer.seal_sector(
+    let seal_metrics = sealer.seal_sector_streaming(
         derive_replica_id(&metadata),
-        &mock_sector_data,
+        &raw_data_path,
         &mut master_storage,
     );
     logln!(
@@ -407,10 +452,13 @@ fn main() {
         master_storage.merkle_tree.as_ref().unwrap().root
     );
 
-    drop(mock_sector_data);
-
     let replica_id = derive_replica_id(&metadata);
 
+    // FIX (Vấn đề 3): Giải phóng raw_chunks ngay sau khi seal xong và đã build Merkle tree.
+    // raw_chunks chiếm ~1GB (262144 chunks × 4KB), không cần thiết cho proving (chỉ cần R_i, S_i, Merkle tree).
+    // Nếu không drop, RAM metric của proving phase sẽ bị lạm phát 1GB và không phản ánh overhead thực.
+    // QUAN TRỌNG: raw_chunks vẫn CÒN DÙNG khi build challenges trong run_scenario (đọc D_ji).
+    // Do đó chúng ta chỉ có thể clear sau khi đã build reference_challenge (dùng để setup pp).
     let reference_challenge = build_reference_challenge(
         &master_storage,
         &bitcoin_hashes,
@@ -420,6 +468,18 @@ fn main() {
         replica_id,
     );
     let (shared_pipeline, shared_setup_metrics) = ProvingPipeline::setup(reference_challenge);
+
+    // Sau khi setup() đã chạy xong (PublicParams không phụ thuộc raw data),
+    // và TRƯỚC khi vào vòng lặp run_scenario — tại đây chúng ta CẦN raw_chunks
+    // cho từng challenge build, nên KHÔNG được clear ở đây.
+    // raw_chunks sẽ được đọc theo từng j_i trong run_scenario.
+    // Nếu muốn tối ưu RAM hơn nữa, có thể dùng lazy-read từ disk thay vì giữ trong memory,
+    // nhưng cho mục đích benchmark Phase 1 thì đây là trade-off hợp lý.
+    logln!(
+        transcript_log,
+        "ℹ️  [RAM NOTE] raw_chunks (~{}MB) vẫn còn trong memory để phục vụ challenge building.\n   → RAM metric của proving phase phản ánh tổng process (seal + prove).\n   → Để đo RAM proving thuần, cần thêm lazy-load từ disk (sẽ thực hiện ở Phase 2).",
+        (master_storage.num_chunks * 4096) / (1024 * 1024)
+    );
 
     // =====================================================================
     // GIAI ĐOẠN 1: CHẠY CÁC KỊCH BẢN
@@ -527,10 +587,10 @@ fn run_scenario(
             challenge_indices_str
         );
 
-        // Determine attack targets (lightweight, không clone master_storage)
-        let mut drop_raw_targets: Vec<usize> = Vec::new();
-        let mut drop_state_targets: Vec<usize> = Vec::new();
+        // Clone storage cho scenario này (rẻ: không còn raw_chunks 32GB)
+        let mut scenario_storage = master_storage.clone_for_attack();
 
+        // Apply drops vào scenario_storage
         match attack {
             AttackMode::None | AttackMode::EpochMismatch => {}
             AttackMode::DropRawRandomPct(pct) => {
@@ -541,56 +601,49 @@ fn run_scenario(
                         name.bytes()
                             .fold(0u64, |acc, b| acc.wrapping_mul(131).wrapping_add(b as u64)),
                     );
-                drop_raw_targets = deterministic_drop_random_pct(pct, seed, num_chunks_total);
-                logln!(
-                    transcript_log,
+                let dropped = scenario_storage.attack_drop_raw_chunks_random_pct(pct, seed);
+                logln!(transcript_log,
                     "   [Mô phỏng] Xóa ngẫu nhiên {} chunks ({}%) — seed={}",
-                    drop_raw_targets.len(),
-                    pct,
-                    seed
-                );
+                    dropped.len(), pct, seed);
             }
-            // FIX KB1d: xóa đúng 1 chunk tại index challenge đầu tiên
             AttackMode::DropRawOneChallenge => {
                 if let Some(&first_challenge) = challenge_indices.first() {
-                    drop_raw_targets = vec![first_challenge];
-                    logln!(
-                        transcript_log,
-                        "   [Mô phỏng KB1d] Xóa D_i tại index challenge đầu tiên: {}",
-                        first_challenge
-                    );
+                    scenario_storage.attack_drop_raw_chunks_at(&[first_challenge]);
+                    logln!(transcript_log,
+                        "   [Mô phỏng KB1d] Xóa D_i tại index challenge đầu tiên: {}", first_challenge);
                 }
             }
             AttackMode::DropRawAtChallenges => {
-                drop_raw_targets = challenge_indices.clone();
-                logln!(
-                    transcript_log,
-                    "   [Mô phỏng] Xóa D_i tại các index challenge: {:?}",
-                    drop_raw_targets
-                );
+                scenario_storage.attack_drop_raw_chunks_at(&challenge_indices);
+                logln!(transcript_log,
+                    "   [Mô phỏng] Xóa D_i tại các index challenge: {:?}", challenge_indices);
             }
             AttackMode::DropStatesAtChallengePrev => {
-                drop_state_targets = challenge_indices
-                    .iter()
-                    .map(|j| j.saturating_sub(1))
-                    .collect();
-                logln!(
-                    transcript_log,
-                    "   [Mô phỏng] Xóa S_{{j_i - 1}} tại các index: {:?}",
-                    drop_state_targets
-                );
+                let state_targets: Vec<usize> = challenge_indices.iter()
+                    .map(|j| j.saturating_sub(1)).collect();
+                scenario_storage.attack_drop_states_at(&state_targets);
+                logln!(transcript_log,
+                    "   [Mô phỏng KB3] Xóa S_{{j_i-1}} tại: {:?}", state_targets);
             }
+            _ => {}
         }
+        let drop_raw_targets: Vec<usize> = scenario_storage.dropped_raw_indices.iter().cloned().collect();
+        let drop_state_targets: Vec<usize> = Vec::new(); // đã xử lý trong scenario_storage
 
         // Build challenge circuits
         let mut challenge_metrics = ChallengeMetrics::default();
         let mut challenges = Vec::new();
         let mut early_fail = false;
         let mut early_fail_reason = String::new();
+        let mut challenge_peak = prover::benchmark::PeakMemoryTracker::new();
 
-        for &j_i in &challenge_indices {
-            // Kiểm tra D_ji
-            let raw_present = master_storage.has_raw_chunk(j_i) && !drop_raw_targets.contains(&j_i);
+        // Snapshot IO counters before building challenges for this scenario
+        let io_ns_before = prover::benchmark::io_get_ns_total();
+        let io_count_before = prover::benchmark::io_get_count();
+
+        for (challenge_no, &j_i) in challenge_indices.iter().enumerate().map(|(i, v)| (i + 1, v)) {
+            // Kiểm tra D_ji từ scenario_storage (đã có drop info)
+            let raw_present = scenario_storage.has_raw_chunk(j_i);
             if !raw_present {
                 early_fail = true;
                 early_fail_reason = format!("missing_D_at_{}", j_i);
@@ -603,32 +656,31 @@ fn run_scenario(
             }
 
             let hash_start = Instant::now();
-            let d_ji = master_storage
+            let d_ji = scenario_storage
                 .get_raw_chunk(j_i)
+                .as_deref()
                 .map(bytes_to_fr)
                 .expect("raw chunk phải tồn tại khi raw_present=true");
             challenge_metrics.c_hash_poseidon2_ms += elapsed_ms_f64(hash_start);
 
             // Kiểm tra S_{j_i - 1}
             let state_prev_index = j_i.saturating_sub(1);
-            let s_ji_minus_1 = match master_storage.get_state(state_prev_index) {
-                Some(s) if !drop_state_targets.contains(&state_prev_index) => *s,
-                _ => {
+            let s_ji_minus_1 = match scenario_storage.get_state(state_prev_index) {
+                Some(s) => *s,
+                None => {
                     early_fail = true;
                     early_fail_reason = format!("missing_S_at_{}", state_prev_index);
-                    logln!(
-                        transcript_log,
+                    logln!(transcript_log,
                         "❌ LỖI: Prover không thể tạo Merkle Path vì làm mất State S_{}!",
-                        state_prev_index
-                    );
+                        state_prev_index);
                     break;
                 }
             };
 
             // Kiểm tra S_{j_i}
-            let s_ji = match master_storage.get_state(j_i) {
-                Some(s) if !drop_state_targets.contains(&j_i) => *s,
-                _ => {
+            let s_ji = match scenario_storage.get_state(j_i) {
+                Some(s) => *s,
+                None => {
                     early_fail = true;
                     early_fail_reason = format!("missing_S_at_{}", j_i);
                     logln!(
@@ -681,12 +733,22 @@ fn run_scenario(
                 break;
             }
 
+            // Tính j_i_seed: hash_chain đầy đủ tương ứng với challenge_no này
+            let j_i_seed = {
+                let beacon_fr_local = string_to_fr(&proof_epoch_hash);
+                let sector_fr_local = Fr::from(sector_id);
+                let epoch_fr_local = Fr::from(proof_epoch as u64);
+                let challenge_fr_local = Fr::from(challenge_no as u64);
+                poseidon2_chain(&[beacon_fr_local, sector_fr_local, epoch_fr_local, challenge_fr_local])
+            };
+
             challenges.push(EngramStepCircuit {
                 epoch: proof_epoch,
                 sector_id: Fr::from(sector_id),
                 sealed_root,
                 beacon,
                 j_i,
+                j_i_seed,
                 d_ji,
                 s_ji_minus_1,
                 s_ji,
@@ -694,7 +756,15 @@ fn run_scenario(
                 path_ji_siblings: proof.siblings,
                 path_ji_indices: proof.path_indices,
             });
+            // Challenge loop nhỏ, vẫn giữ sample mỗi bước để bắt peak của witness build.
+            challenge_peak.sample();
         }
+        // compute IO delta for challenge building
+        let io_ns_after_build = prover::benchmark::io_get_ns_total();
+        let io_count_after_build = prover::benchmark::io_get_count();
+        challenge_metrics.io_read_ms = (io_ns_after_build.saturating_sub(io_ns_before) as f64) / 1_000_000.0;
+        challenge_metrics.io_read_count = io_count_after_build.saturating_sub(io_count_before);
+        challenge_metrics.ram_peak_kib = challenge_peak.peak_delta_kib();
 
         if early_fail {
             write_csv_row_fail(
@@ -733,16 +803,39 @@ fn run_scenario(
         if proof_epoch != verify_epoch {
             logln!(
                 transcript_log,
-                "❌ [EPOCH CHECK] Proof sinh ở epoch {} nhưng đang verify ở epoch {} (hash cũ: {}, hash mới: {})",
-                proof_epoch, verify_epoch, proof_epoch_hash, verify_epoch_hash
+                "⚠️  [KB4 EPOCH CHECK] Proof sinh ở epoch {} (beacon: {}...) nhưng verifier dùng epoch {} (beacon: {}...)",
+                proof_epoch,
+                &proof_epoch_hash[..16],
+                verify_epoch,
+                &verify_epoch_hash[..16]
+            );
+            logln!(
+                transcript_log,
+                "   → Verifier tự tính z0 từ verify_epoch — nếu proof dùng epoch cũ sẽ bị reject."
             );
         }
+
+        // FIX KB4: Verifier phải tự build z0 từ verify_epoch_hash,
+        // KHÔNG được dùng z0_primary từ prover (đó là replay attack).
+        // Nếu epoch không khớp, beacon trong z0_verify sẽ khác beacon trong proof
+        // → verify thất bại vì epoch_binding constraint sẽ reject.
+        let verify_beacon = string_to_fr(&verify_epoch_hash);
+        let verify_z0 = vec![
+            NovaFr::from(verify_epoch as u64),          // epoch từ verify side
+            NovaFr::ZERO,                                // step counter bắt đầu từ 0
+            nova_fr_from_core(Fr::from(sector_id)),
+            nova_fr_from_core(sealed_root),
+            nova_fr_from_core(verify_beacon),            // beacon của verify_epoch, không phải proof_epoch
+            nova_fr_from_core(replica_id),
+            nova_fr_from_core(replica_id),               // z_acc khởi tạo = replica_id
+        ];
 
         let (is_valid, verification_metrics) = verifier::EngramVerifier::verify_proof(
             &pipeline.pp,
             &spartan_proof,
             config.challenges_per_epoch,
-            z0.clone(),
+            verify_z0,
+            Some(&pipeline.vk),  // FIX: dùng vk cached, không gọi setup() lần 3
         );
 
         let steps = config.challenges_per_epoch.max(1) as f64;
@@ -752,6 +845,20 @@ fn run_scenario(
             / steps;
 
         let status = if is_valid { "Valid" } else { "Invalid" };
+        logln!(
+            transcript_log,
+            "{}  [VERIFY RESULT] Kịch bản {} — {}{}",
+            if is_valid { "✅" } else { "❌" },
+            name,
+            status,
+            if proof_epoch != verify_epoch && is_valid {
+                " ← BUG: epoch mismatch nhưng vẫn Valid!"
+            } else if proof_epoch != verify_epoch && !is_valid {
+                " ← ĐÚNG: epoch mismatch bị bắt chính xác."
+            } else {
+                ""
+            }
+        );
         let mut drop_list: Vec<String> = Vec::new();
         drop_list.extend(drop_raw_targets.iter().map(|i| format!("R{}", i)));
         drop_list.extend(drop_state_targets.iter().map(|i| format!("S{}", i)));
@@ -779,9 +886,13 @@ fn run_scenario(
             format!("{:.3}", seal_metrics.c_chunk_absorb_4kb_ms),
             format!("{:.3}", seal_metrics.c_hash_poseidon2_ms),
             format!("{:.3}", seal_metrics.c_merkle_build_ms),
+            format!("{:.3}", seal_metrics.io_read_ms),
+            seal_metrics.io_read_count.to_string(),
             seal_metrics.ram_peak_kib.to_string(),
             format!("{:.3}", challenge_metrics.c_hash_poseidon2_ms),
             format!("{:.3}", challenge_metrics.c_merkle_path_ms),
+            format!("{:.3}", challenge_metrics.io_read_ms),
+            challenge_metrics.io_read_count.to_string(),
             challenge_metrics.ram_peak_kib.to_string(),
             format!("{:.3}", step_total_ms),
             format!("{:.3}", proving_metrics.c_augmented_nova_ms),
@@ -843,9 +954,13 @@ fn write_csv_row_fail(
         format!("{:.3}", seal_metrics.c_chunk_absorb_4kb_ms),
         format!("{:.3}", seal_metrics.c_hash_poseidon2_ms),
         format!("{:.3}", seal_metrics.c_merkle_build_ms),
+        format!("{:.3}", seal_metrics.io_read_ms),
+        seal_metrics.io_read_count.to_string(),
         seal_metrics.ram_peak_kib.to_string(),
         format!("{:.3}", challenge_metrics.c_hash_poseidon2_ms),
         format!("{:.3}", challenge_metrics.c_merkle_path_ms),
+        format!("{:.3}", challenge_metrics.io_read_ms),
+        challenge_metrics.io_read_count.to_string(),
         challenge_metrics.ram_peak_kib.to_string(),
         "0".to_string(),
         "0".to_string(),

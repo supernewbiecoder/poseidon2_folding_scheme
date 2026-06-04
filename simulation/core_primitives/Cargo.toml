@@ -9,3 +9,4 @@ ff = "0.13"             # Trait cho Finite Fields
 lazy_static = "1.4"     # Khởi tạo ma trận và hằng số tĩnh
 hex = "0.4.3"           # Giải mã hex từ script Sage của bạn
 rayon = "1.8"           # Đa luồng cho Merkle tree build
+nova-snark = "0.71.1"

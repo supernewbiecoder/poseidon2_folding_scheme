@@ -1,5 +1,4 @@
-use crate::poseidon2::hash_2;
-use pasta_curves::pallas::Scalar as Fr;
+use crate::{poseidon2::hash_2, Fr};
 use rayon::prelude::*;
 
 #[derive(Clone)] // <--- Thêm dòng này

@@ -21,8 +21,8 @@ impl EngramConfig {
             sector_size_bytes: 32 * 1024 * 1024, // 32MB = 8192 chunks = 2^13
             chunk_size_bytes: 4096,                // 4KB (1 shard/chunk)
             tree_height: 13,                       // 2^13 lá = 8192 chunks = 32MB
-            challenges_per_epoch: 10,
-            epochs_per_window: 5,
+            challenges_per_epoch: 20,
+            epochs_per_window: 100,
         }
     }
 

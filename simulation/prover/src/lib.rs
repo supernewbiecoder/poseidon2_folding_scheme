@@ -7,4 +7,6 @@ pub use benchmark::{ChallengeMetrics, PeakMemoryTracker, ProvingMetrics, Sealing
 pub use storage::ProverStorage;
 pub use sealing::Sealer;
 
-pub use proving::{EngramStepCircuit, ProvingPipeline}; //export mạch và pipeline ra ngoài để Runner sử dụng
+pub use proving::{EngramStepCircuit, EngramVerifierKey, ProvingPipeline};
+// Re-export type aliases cần thiết cho verifier crate
+pub use proving::{G1, G2, SpartanPrimary, SpartanSecondary};

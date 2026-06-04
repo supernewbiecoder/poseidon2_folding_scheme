@@ -27,14 +27,17 @@ pub fn current_process_memory_kib() -> u64 {
 
 #[derive(Clone, Debug, Default)]
 pub struct PeakMemoryTracker {
+    baseline_kib: u64,
     peak_kib: u64,
 }
 
 impl PeakMemoryTracker {
     pub fn new() -> Self {
-        let mut tracker = Self::default();
-        tracker.sample();
-        tracker
+        let baseline_kib = current_process_memory_kib();
+        Self {
+            baseline_kib,
+            peak_kib: baseline_kib,
+        }
     }
 
     pub fn sample(&mut self) {
@@ -43,6 +46,10 @@ impl PeakMemoryTracker {
 
     pub fn peak_kib(&self) -> u64 {
         self.peak_kib
+    }
+
+    pub fn peak_delta_kib(&self) -> u64 {
+        self.peak_kib.saturating_sub(self.baseline_kib)
     }
 }
 
@@ -59,6 +66,40 @@ pub struct SealingMetrics {
     pub c_hash_poseidon2_ms: f64,
     pub c_merkle_build_ms: f64,
     pub ram_peak_kib: u64,
+    pub io_read_ms: f64,
+    pub io_read_count: u64,
+}
+// Global IO counters (nanoseconds total and read count)
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static IO_READ_NS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static IO_READ_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Add nanoseconds to the global IO read counter.
+pub fn io_add_ns(ns: u64) {
+    IO_READ_NS_TOTAL.fetch_add(ns, Ordering::Relaxed);
+}
+
+/// Increment the global IO read count by `n`.
+pub fn io_inc_count(n: u64) {
+    IO_READ_COUNT.fetch_add(n, Ordering::Relaxed);
+}
+
+/// Get total IO read nanoseconds so far.
+pub fn io_get_ns_total() -> u64 {
+    IO_READ_NS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Get total IO read operations so far.
+pub fn io_get_count() -> u64 {
+    IO_READ_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the global IO counters to zero.
+/// Use with care in concurrent contexts; here it's only used for local snapshots.
+pub fn io_reset() {
+    IO_READ_NS_TOTAL.store(0, Ordering::Relaxed);
+    IO_READ_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,7 +107,10 @@ pub struct ChallengeMetrics {
     pub c_hash_poseidon2_ms: f64,
     pub c_merkle_path_ms: f64,
     pub ram_peak_kib: u64,
+    pub io_read_ms: f64,
+    pub io_read_count: u64,
 }
+
 
 #[derive(Clone, Debug, Default)]
 pub struct ProvingMetrics {
