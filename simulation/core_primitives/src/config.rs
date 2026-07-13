@@ -13,16 +13,11 @@ impl EngramConfig {
     /// Cấu hình dùng để chạy Simulation và Test kịch bản tấn công (nhanh, nhẹ)
     pub fn mock_dev() -> Self {
         Self {
-            // sector_size_bytes: 1024 * 1024 * 1024, // 1GB = 262144 chunks = 2^18
-            // chunk_size_bytes: 4096,                // 4KB (1 shard/chunk)
-            // tree_height: 18,                       // 2^18 lá = 262144 chunks = 1GB
-            // challenges_per_epoch: 50,
-            // epochs_per_window: 5,
-            sector_size_bytes: 32 * 1024 * 1024, // 32MB = 8192 chunks = 2^13
+            sector_size_bytes: 1 * 1024 * 1024 * 1024, // Tự động set 1GB
             chunk_size_bytes: 4096,                // 4KB (1 shard/chunk)
-            tree_height: 13,                       // 2^13 lá = 8192 chunks = 32MB
-            challenges_per_epoch: 20,
-            epochs_per_window: 100,
+            tree_height: 18,                       // Tự động set height 18
+            challenges_per_epoch: 50,
+            epochs_per_window: 5, // chuẩn bị cho tương lai simulation
         }
     }
 

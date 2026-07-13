@@ -194,7 +194,8 @@ fn derive_challenge_index(
     let challenge_fr = Fr::from(challenge_no as u64);
     let seed = poseidon2_chain(&[beacon_fr, sector_fr, epoch_fr, challenge_fr]);
     let seed_bytes = seed.to_repr();
-    (usize::from(seed_bytes.as_ref()[0]) % num_chunks).saturating_add(1)
+    let j_i_u64 = u64::from_le_bytes(seed_bytes.as_ref()[0..8].try_into().unwrap());
+    (j_i_u64 as usize % num_chunks).saturating_add(1)
 }
 
 /// Tạo public input vector dạng `NovaFr` cho một epoch (z0 format).
@@ -225,6 +226,7 @@ fn build_reference_challenge(
     num_chunks_total: usize,
     sector_id: u64,
     replica_id: Fr,
+    tree_height: usize,
 ) -> EngramStepCircuit {
     let proof_epoch_hash = select_epoch_hash(bitcoin_hashes, proof_epoch);
     let beacon = string_to_fr(&proof_epoch_hash);
@@ -234,14 +236,6 @@ fn build_reference_challenge(
         .expect("Không thể tạo challenge mẫu vì thiếu Merkle tree")
         .root;
     let j_i = derive_challenge_index(&proof_epoch_hash, sector_id, proof_epoch, 1, num_chunks_total);
-    // Tính j_i_seed: giá trị hash_chain đầy đủ TRƯỚC khi % N — để truyền vào circuit
-    let j_i_seed = {
-        let beacon_fr = string_to_fr(&proof_epoch_hash);
-        let sector_fr = Fr::from(sector_id);
-        let epoch_fr = Fr::from(proof_epoch as u64);
-        let challenge_fr = Fr::from(1u64); // challenge_no = 1 (1-based)
-        poseidon2_chain(&[beacon_fr, sector_fr, epoch_fr, challenge_fr])
-    };
     let d_ji = storage
         .get_raw_chunk(j_i)
         .as_deref()
@@ -267,13 +261,13 @@ fn build_reference_challenge(
         sealed_root,
         beacon,
         j_i,
-        j_i_seed,
         d_ji,
         s_ji_minus_1,
         s_ji,
         replica_id,
         path_ji_siblings: proof.siblings,
         path_ji_indices: proof.path_indices,
+        tree_height,
     }
 }
 
@@ -466,6 +460,7 @@ fn main() {
         num_chunks_total,
         metadata.sector_id,
         replica_id,
+        config.tree_height,
     );
     let (shared_pipeline, shared_setup_metrics) = ProvingPipeline::setup(reference_challenge);
 
@@ -733,29 +728,22 @@ fn run_scenario(
                 break;
             }
 
-            // Tính j_i_seed: hash_chain đầy đủ tương ứng với challenge_no này
-            let j_i_seed = {
-                let beacon_fr_local = string_to_fr(&proof_epoch_hash);
-                let sector_fr_local = Fr::from(sector_id);
-                let epoch_fr_local = Fr::from(proof_epoch as u64);
-                let challenge_fr_local = Fr::from(challenge_no as u64);
-                poseidon2_chain(&[beacon_fr_local, sector_fr_local, epoch_fr_local, challenge_fr_local])
-            };
-
             challenges.push(EngramStepCircuit {
                 epoch: proof_epoch,
                 sector_id: Fr::from(sector_id),
                 sealed_root,
                 beacon,
                 j_i,
-                j_i_seed,
                 d_ji,
                 s_ji_minus_1,
                 s_ji,
                 replica_id,
                 path_ji_siblings: proof.siblings,
                 path_ji_indices: proof.path_indices,
+                tree_height: config.tree_height,
             });
+
+
             // Challenge loop nhỏ, vẫn giữ sample mỗi bước để bắt peak của witness build.
             challenge_peak.sample();
         }

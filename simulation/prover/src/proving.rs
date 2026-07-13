@@ -32,13 +32,15 @@ pub struct EngramStepCircuit {
     pub sealed_root: CoreFr,
     pub beacon: CoreFr,
     pub j_i: usize,
-    pub j_i_seed: CoreFr,      // Giá trị seed đầy đủ từ hash_chain, TRƯỚC khi % N
+    // j_i_seed field đã bị xóa — circuit tự tính seed qua hash_chain_gadget,
+    // không cần prover cung cấp riêng (tránh confusion và lãng phí witness).
     pub d_ji: CoreFr,
     pub s_ji_minus_1: CoreFr,
     pub s_ji: CoreFr,
     pub replica_id: CoreFr,
     pub path_ji_siblings: Vec<CoreFr>,
     pub path_ji_indices: Vec<bool>,
+    pub tree_height: usize,
 }
 
 /// Helper: chuyển CoreFr sang NovaFr qua byte representation.
@@ -68,12 +70,13 @@ impl StepCircuit<NovaFr> for EngramStepCircuit {
     ///   1. epoch binding
     ///   2. step counter tăng
     ///   3. sector_id / sealed_root / beacon / replica_id binding
-    ///   4. Challenge Binding: pseudo_j_i (từ beacon, sector, epoch, counter)
-    ///      được enforce bằng == j_i_var (FIX: tautology cũ đã xóa)
+    ///   4. Challenge Binding: seed = hash_chain(beacon, sector, epoch, challenge_no),
+    ///      rã H bit thấp làm r, ép r + 1 == j_i_var (modulo N = 2^H, đóng Soundness Gap)
     ///   5. Replica Reconstruction + State Transition check
-    ///   6. Merkle Path verification
-    ///   7. IVC State Accumulation: z_acc_next = Poseidon2(z_acc, Poseidon2(j_i, S_ji))
-    ///      theo spec trong Demo.md §State Accumulation
+    ///   6. Merkle Path verification — path_indices[l] bound với bit_l(j_i - 1)
+    ///      (leaf index 0-based) để ngăn Prover cung cấp proof của vị trí khác j_i
+    ///   7. IVC State Accumulation: z_acc_next = Poseidon2(z_acc, hash_4(j_i, S_ji, R_ji, 0))
+    ///      theo spec Demo.md §State Accumulation — bao gồm đầy đủ j_i, S_ji, R_sealed
     fn synthesize<CS: ConstraintSystem<NovaFr>>(
         &self,
         cs: &mut CS,
@@ -215,24 +218,68 @@ impl StepCircuit<NovaFr> for EngramStepCircuit {
             &[&beacon_var, &sector_id_var, &epoch_public, &challenge_no_var],
         )?;
 
-        // j_i thực tế trong witness = seed_bytes[0] % num_chunks + 1
+        if let Some(val) = pseudo_j_i_full.get_value() {
+            println!("circuit pseudo_j_i_full: {:?}", val);
+            println!("circuit challenge_no_var: {:?}", challenge_no_var.get_value().unwrap());
+        }
         // Circuit không thể enforce modulo trong R1CS (đắt và phức tạp).
-        // Thay vào đó: enforce pseudo_j_i_full khớp với giá trị SEED (trước mod),
-        // và Prover cam kết j_i_seed tương ứng.
+        // Thay vào đó: rã pseudo_j_i_full thành bit, lấy H bit thấp làm r,
+        // rồi enforce r + 1 == j_i_var (modulo với N=2^H public không ảnh
+        // hưởng soundness — Prover không thể fake seed mà vẫn qua được
+        // constraint này).
         //
-        // Cách thực tế nhất hiện tại: Prover commit giá trị seed đầy đủ
-        // vào witness j_i_seed_var, circuit enforce nó bằng hash_chain,
-        // còn j_i = seed[0] % N + 1 được enforce ở tầng host (hợp lý vì
-        // modulo với N public không ảnh hưởng soundness — Prover không thể
-        // fake seed mà vẫn qua được constraint này).
-        let j_i_seed_var = AllocatedNum::alloc(cs.namespace(|| "j_i_seed"), || {
-            Ok(core_fr_to_nova_fr(self.j_i_seed))
+        // VÁ LỖ HỔNG SOUNDNESS (Challenge Binding Modulo):
+        // N = 2^H. Vậy r = (j_i_seed % N) chính là H bit thấp nhất của j_i_seed.
+        // Ta sử dụng to_bits_le_strict() để rã pseudo_j_i_full thành 255 bit nhị phân an toàn (< p).
+        // Sau đó tổng hợp lại H bit đầu tiên thành r_var, và ép r_var == j_i_var - 1.
+        let seed_bits = pseudo_j_i_full.to_bits_le_strict(cs.namespace(|| "seed_bits"))?;
+        
+        let h = self.tree_height;
+        let mut lc_r = nova_snark::frontend::LinearCombination::zero();
+        let mut factor = NovaFr::ONE;
+        
+        for i in 0..h {
+            lc_r = lc_r + &seed_bits[i].lc(CS::one(), factor);
+            factor *= NovaFr::from(2u64);
+        }
+        
+        // Tạo biến r_var lưu giá trị của modulo (H bits thấp)
+        let r_val = match pseudo_j_i_full.get_value() {
+            Some(v) => {
+                let bytes = v.to_repr();
+                let bytes_ref: &[u8; 32] = bytes.as_ref().try_into().unwrap();
+                let mut tmp_r = NovaFr::ZERO;
+                let mut tmp_factor = NovaFr::ONE;
+                for i in 0..h {
+                    let byte_idx = i / 8;
+                    let bit_idx = i % 8;
+                    if (bytes_ref[byte_idx] >> bit_idx) & 1 == 1 {
+                        tmp_r += tmp_factor;
+                    }
+                    tmp_factor *= NovaFr::from(2u64);
+                }
+                Some(tmp_r)
+            },
+            None => None,
+        };
+        
+        let r_var = AllocatedNum::alloc(cs.namespace(|| "r_var"), || {
+            r_val.ok_or(SynthesisError::AssignmentMissing)
         })?;
+        
         cs.enforce(
-            || "challenge_binding: seed == hash_chain(beacon,sector,epoch,challenge_no)",
-            |lc| lc + pseudo_j_i_full.get_variable(),
+            || "r_var == sum(H bits)",
+            |_| lc_r,
             |lc| lc + CS::one(),
-            |lc| lc + j_i_seed_var.get_variable(),
+            |lc| lc + r_var.get_variable(),
+        );
+        
+        // Ép r_var == j_i_var - 1 (vì host dùng: j_i = r + 1)
+        cs.enforce(
+            || "j_i binding: r_var + 1 == j_i_var",
+            |lc| lc + r_var.get_variable() + CS::one(),
+            |lc| lc + CS::one(),
+            |lc| lc + j_i_var.get_variable(),
         );
 
         // --- 7. MERKLE PATH VERIFICATION (SEALING VERIFY) ---
@@ -245,6 +292,29 @@ impl StepCircuit<NovaFr> for EngramStepCircuit {
         )?;
 
         // b. Vòng lặp băm ngược lên gốc (Root)
+        // FIX SOUNDNESS: Ngoài việc enforce is_right_var là boolean, cần phải enforce
+        // is_right_var[level] == bit_level(leaf_idx). Nếu không, Prover có thể cung cấp
+        // Merkle proof của leaf khác j_i mà không bị phát hiện.
+        //
+        // QUAN TRỌNG — OFFSET 1-based/0-based:
+        //   Host build Merkle tree với leaf index 0-based, và luôn gọi
+        //   generate_proof(j_i - 1) (xem merkle_tree.rs::generate_proof +
+        //   simulator_runner/main.rs). Tức path_ji_indices[level] = bit_level(j_i - 1),
+        //   KHÔNG PHẢI bit_level(j_i). j_i_var ở đây là 1-based (host: j_i = r + 1),
+        //   nên phải rã (j_i_var - 1) chứ không phải rã thẳng j_i_var — nếu không,
+        //   constraint sẽ luôn unsatisfied với MỌI prover trung thực (lệch 1 bit
+        //   ở vị trí thấp nhất trở lên do phép trừ 1 gây carry/borrow).
+        let leaf_idx_var = AllocatedNum::alloc(cs.namespace(|| "leaf_idx"), || {
+            Ok(j_i_var.get_value().ok_or(SynthesisError::AssignmentMissing)? - NovaFr::ONE)
+        })?;
+        cs.enforce(
+            || "leaf_idx_plus_1_eq_j_i",
+            |lc| lc + leaf_idx_var.get_variable() + CS::one(),
+            |lc| lc + CS::one(),
+            |lc| lc + j_i_var.get_variable(),
+        );
+        let j_i_bits = leaf_idx_var.to_bits_le_strict(cs.namespace(|| "j_i_bits"))?;
+
         for (i, (sibling_val, is_right_val)) in self.path_ji_siblings.iter().zip(self.path_ji_indices.iter()).enumerate() {
             // Cấp phát chứng nhân cho sibling node
             let sibling_var = AllocatedNum::alloc(cs.namespace(|| format!("sibling_{}", i)), || Ok(core_fr_to_nova_fr(*sibling_val)))?;
@@ -259,6 +329,16 @@ impl StepCircuit<NovaFr> for EngramStepCircuit {
                 |lc| lc + is_right_var.get_variable(),
                 |lc| lc + CS::one() - is_right_var.get_variable(),
                 |lc| lc,
+            );
+
+            // FIX SOUNDNESS: Ép is_right_var[i] phải khớp với bit i của leaf_idx (= j_i - 1)
+            // (Merkle tree index là 0-based, j_i là 1-based)
+            // is_right_var == j_i_bits[i]: Enforce bằng cách dùng LC từ Boolean bit.
+            cs.enforce(
+                || format!("merkle_bit_binding_{}", i),
+                |lc| lc + is_right_var.get_variable(),
+                |lc| lc + CS::one(),
+                |_| j_i_bits[i].lc(CS::one(), NovaFr::ONE),
             );
 
             // Sắp xếp đúng vị trí Trái/Phải trước khi băm
@@ -285,17 +365,30 @@ impl StepCircuit<NovaFr> for EngramStepCircuit {
             |lc| lc + sealed_root_var.get_variable(), // z[3] chính là sealed_root public
         );
 
-        // --- 8. IVC STATE ACCUMULATION (FIX BUG 2) ---
+        // --- 8. IVC STATE ACCUMULATION ---
         // Spec (Demo.md §State Accumulation):
         //   z_i = Poseidon2(z_{i-1}, j_i, S_ji, R_sealed)
-        // Impl hiệu quả với hash_2 nested (tránh cần hash_4 gadget thêm):
-        //   inner = Poseidon2(j_i_var, s_ji_var)
-        //   z_acc_next = Poseidon2(z[6], inner)
-        // z[6] là z_acc từ bước trước (khởi tạo = replica_id tại z0).
-        let inner_acc = hash_2_gadget(
+        //
+        // FIX: Trước đây thiếu R_ji trong accumulation. Bây giờ dùng hash_4_gadget
+        // để commit đầy đủ (j_i, S_ji, R_ji, 0_pad) vào inner hash:
+        //   inner = hash_4(j_i, S_ji, R_ji, 0)
+        //   z_acc_next = hash_2(z_acc_prev, inner)
+        //
+        // Điều này đảm bảo z_acc tích lũy toàn bộ bằng chứng: index + state + replica.
+        // 0_pad dùng để fill slot thứ 4 của hash_4 (binary tree composition).
+        let zero_pad = AllocatedNum::alloc(cs.namespace(|| "zero_pad_acc"), || Ok(NovaFr::ZERO))?;
+        cs.enforce(
+            || "enforce_zero_pad_acc",
+            |lc| lc + zero_pad.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc,
+        );
+        let inner_acc = hash_4_gadget(
             cs.namespace(|| "acc_inner_hash"),
             &j_i_var,
             &s_ji_var,
+            &r_ji_var,
+            &zero_pad,
         )?;
         let z_acc_next = hash_2_gadget(
             cs.namespace(|| "acc_z_next"),
@@ -366,10 +459,6 @@ impl ProvingPipeline {
         let first_sector_id = core_fr_to_nova_fr(challenges[0].sector_id);
         let first_sealed_root = core_fr_to_nova_fr(challenges[0].sealed_root);
         let first_beacon = core_fr_to_nova_fr(challenges[0].beacon);
-        let first_j_i = NovaFr::from(challenges[0].j_i as u64);
-        let first_d_ji = core_fr_to_nova_fr(challenges[0].d_ji);
-        let first_s_ji_minus_1 = core_fr_to_nova_fr(challenges[0].s_ji_minus_1);
-        let first_s_ji = core_fr_to_nova_fr(challenges[0].s_ji);
         let first_replica_id = core_fr_to_nova_fr(challenges[0].replica_id);
         // z0 gồm public context + step counter + z_acc khởi tạo bằng replica_id
         // (theo spec: z_0 = Replica_id cho IVC state tích lũy)

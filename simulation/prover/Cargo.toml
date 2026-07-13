@@ -12,3 +12,4 @@ nova-snark = "0.71.1"
 bellperson = "0.26.0"
 serde = { version = "1.0", features = ["derive"] } # Cần thiết cho bincode
 sysinfo = "0.29"
+bellpepper-core = "0.4.0"
